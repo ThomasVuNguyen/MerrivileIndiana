@@ -17,6 +17,12 @@ export function LibraryPage() {
   const [filter, setFilter] = useState('')
   const picker = useRef<HTMLInputElement>(null)
 
+  // A link like #/library/l123 (from a source chip in a chat) opens that file.
+  useEffect(() => {
+    const id = location.hash.match(/^#\/library\/(\w+)/)?.[1]
+    if (id) setOpen(id)
+  }, [])
+
   const load = useCallback(
     () =>
       fetch('/api/library')

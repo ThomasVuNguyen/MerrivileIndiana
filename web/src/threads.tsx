@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ThreadInfo } from '../shared/protocol'
+import { chatNext } from './flags'
+import { Icon } from './ui'
 
 /** The chat each place (the Shop, a project) last showed, so a reload comes back to it. */
 export const lastThread = {
@@ -31,7 +33,7 @@ export type Threads = {
 }
 
 /** The current chat's name, a list of the others, and a new chat. Sits on top of the open chat. */
-export function ThreadBar({ threads }: { threads: Threads }) {
+export function ThreadBar({ threads, side, onSide }: { threads: Threads; side?: boolean; onSide?: () => void }) {
   const [open, setOpen] = useState(false)
   const box = useRef<HTMLDivElement>(null)
   const current = threads.threads.find((t) => t.id === threads.thread)
@@ -57,16 +59,29 @@ export function ThreadBar({ threads }: { threads: Threads }) {
         {threads.threads.length > 0 && <span className="faint">{threads.threads.length === 1 ? '1 chat' : `${threads.threads.length} chats`} ▾</span>}
       </button>
       {busyElsewhere && <span className="thread-busy">working in “{busyElsewhere.title}”</span>}
-      <button
-        className="link thread-new"
-        disabled={!threads.thread}
-        onClick={() => {
-          setOpen(false)
-          threads.open('')
-        }}
-      >
-        + New chat
-      </button>
+      {chatNext ? (
+        <span className="thread-icons">
+          <button className="thread-icon" disabled={!threads.thread} aria-label="New chat" title="New chat" onClick={() => threads.open('')}>
+            <Icon name="compose" size={14} />
+          </button>
+          {onSide && (
+            <button className={`thread-icon${side ? ' is-on' : ''}`} aria-label={side ? 'Float the chat' : 'Open as a side panel'} title={side ? 'Float the chat' : 'Open as a side panel'} onClick={onSide}>
+              <Icon name="panel" size={14} />
+            </button>
+          )}
+        </span>
+      ) : (
+        <button
+          className="link thread-new"
+          disabled={!threads.thread}
+          onClick={() => {
+            setOpen(false)
+            threads.open('')
+          }}
+        >
+          + New chat
+        </button>
+      )}
       {open && (
         <ul className="thread-list">
           {threads.threads.map((t) => (
@@ -107,4 +122,25 @@ function ago(at: number) {
   if (s < 86400) return `${Math.floor(s / 3600)} h`
   if (s < 7 * 86400) return `${Math.floor(s / 86400)} d`
   return new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+/** Whether the chat sits as a full-height side panel instead of floating; remembered per browser. */
+export function useSidePanel(): [boolean, () => void] {
+  const [side, setSide] = useState(() => {
+    try {
+      return chatNext && localStorage.getItem('merrivile:chat-side') === '1'
+    } catch {
+      return false
+    }
+  })
+  const toggle = () =>
+    setSide((s) => {
+      try {
+        localStorage.setItem('merrivile:chat-side', s ? '0' : '1')
+      } catch {
+        // fine
+      }
+      return !s
+    })
+  return [side, toggle]
 }

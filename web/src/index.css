@@ -3717,3 +3717,288 @@ body:hover .concept-switch {
   background: var(--text);
   transition: width 0.2s;
 }
+
+/* ---------------------------------------------------------------- chat prototype (?chat=new) */
+
+.chat-next .msg-who {
+  display: none;
+}
+
+/* The person's message: a light block on the right. The AI's answer is plain text. */
+.chat-next .msg--user {
+  align-self: flex-end;
+  max-width: 86%;
+  padding: 7px 11px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.chat-next .msg--user .msg-text {
+  font-weight: 400;
+}
+
+.chat-next .msg--user .msg-images {
+  justify-content: flex-end;
+}
+
+.chat-next .thread {
+  gap: 16px;
+}
+
+.activity {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.activity-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  padding: 1px 0;
+  color: var(--muted);
+  text-align: left;
+}
+
+.activity-head:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.activity-head:disabled {
+  cursor: default;
+}
+
+.activity-head .call-dot {
+  align-self: center;
+}
+
+.activity.is-working .call-dot {
+  background: var(--accent);
+  animation: pulse 1s infinite ease-in-out;
+}
+
+.activity.is-working .activity-what {
+  color: var(--text);
+}
+
+.activity-sum {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.activity-err {
+  flex: none;
+  color: #b23a2b;
+}
+
+.activity-chev {
+  flex: none;
+}
+
+.activity-steps {
+  display: grid;
+  gap: 4px;
+  margin: 5px 0 2px 2px;
+  padding: 0 0 0 11px;
+  border-left: 1px solid var(--border-strong);
+  list-style: none;
+}
+
+.activity-steps li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.activity-steps li span:first-child {
+  color: var(--text);
+}
+
+.activity-steps li span:nth-child(2) {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.activity-steps li.is-error span:first-child {
+  color: #b23a2b;
+}
+
+.activity-steps li.is-running span:first-child {
+  color: var(--accent);
+}
+
+.msg-actions {
+  display: flex;
+  gap: 2px;
+  margin: 2px 0 0 -4px;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+
+.msg:hover .msg-actions {
+  opacity: 1;
+}
+
+.msg-actions button {
+  display: grid;
+  place-items: center;
+  padding: 4px;
+  color: var(--muted);
+}
+
+.msg-actions button:hover {
+  color: var(--text);
+}
+
+/* Starters for an empty message box. */
+.suggestions {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.suggestion {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.suggestion:hover {
+  border-color: var(--text);
+  color: var(--text);
+}
+
+.chat-next .composer-actions .composer-model {
+  margin-right: 6px;
+  white-space: nowrap;
+}
+
+.listening {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.listening i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #c0392b;
+  animation: pulse 1s infinite ease-in-out;
+}
+
+.mic.is-on {
+  color: #c0392b;
+}
+
+.thread-icons {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.thread-icon {
+  display: grid;
+  place-items: center;
+  padding: 3px;
+  color: var(--muted);
+}
+
+.thread-icon:hover,
+.thread-icon.is-on {
+  color: var(--text);
+}
+
+.thread-icon:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Where a fact came from: opens the Library file, shop item or part. */
+.cite {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  margin: 0 1px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  font-size: 0.86em;
+  line-height: 1.5;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.cite::before {
+  font-size: 0.85em;
+}
+
+.cite--library::before {
+  content: '▫';
+}
+
+.cite--shop::before {
+  content: '▪';
+}
+
+.cite--part::before {
+  content: '◇';
+}
+
+.cite:hover {
+  border-color: var(--text);
+  color: var(--text);
+}
+
+/* The chat as a full-height panel on the right instead of floating over the model. */
+.dock.is-side {
+  left: auto;
+  right: 16px;
+  top: 76px;
+  bottom: 16px;
+  transform: none;
+  width: min(420px, calc(100% - 32px));
+}
+
+.dock.is-side .dock-thread {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+.dock.is-side .dock-toggle {
+  display: none;
+}
+
+.dock.is-side .dock-bar .composer {
+  padding-left: 14px;
+}
+
+/* With the chat as a side panel, the part sheet and appearance card move left of it. */
+:has(> .dock.is-side) > .paper-card {
+  right: 452px;
+}
+
+.thread-pick .faint {
+  white-space: nowrap;
+}
+
+/* Suggestions that don't fit a narrow box are left out rather than cut. */
+.chat-next .composer {
+  container-type: inline-size;
+}
+
+@container (max-width: 520px) {
+  .suggestion:nth-child(n + 2) {
+    display: none;
+  }
+}

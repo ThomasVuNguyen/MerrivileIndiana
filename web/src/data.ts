@@ -28,7 +28,7 @@ export type ToolCall = Omit<CallState, 'id'> & { id?: string }
 
 export type Message =
   | { role: 'user'; text: string; faces?: FaceRef[]; images?: Attachment[] }
-  | { role: 'ai'; text: string; calls?: ToolCall[]; model?: string; error?: boolean; notes?: ChangeNote[] }
+  | { role: 'ai'; text: string; calls?: ToolCall[]; model?: string; error?: boolean; notes?: ChangeNote[]; startedAt?: number; ms?: number }
 
 export type Motion = 'fixed' | 'rotor' | 'carrier' | 'planet'
 

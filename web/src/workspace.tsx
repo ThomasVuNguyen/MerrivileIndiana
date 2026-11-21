@@ -181,6 +181,16 @@ function useWorkspaceState(projectId: string) {
     }
   }, [live, projectId])
 
+  // A part source chip in the chat selects that part.
+  useEffect(() => {
+    const show = (e: Event) => {
+      setSelected((e as CustomEvent<string>).detail)
+      setView('part')
+    }
+    window.addEventListener('merrivile:part', show)
+    return () => window.removeEventListener('merrivile:part', show)
+  }, [])
+
   const refreshModels = useCallback(() => {
     api.models().then(setModels, () => setModels([]))
   }, [])

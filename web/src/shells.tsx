@@ -4,7 +4,7 @@ import { gearTrain, VERSIONS } from './data'
 import type { Part } from './data'
 import { Viewer } from './Viewer'
 import type { ViewerTheme } from './Viewer'
-import { ThreadBar } from './threads'
+import { ThreadBar, useSidePanel } from './threads'
 import { Appearance, ChatThread, Composer, ExportMenu, Icon, IconButton, ImportButton, ModelPicker, Properties, Source, Toast, totalMass } from './ui'
 import { TierMark, TIER_LABEL } from './paper'
 import { plainFirst } from './prose'
@@ -185,7 +185,9 @@ const THEME_B: ViewerTheme = { edge: '#2b2b26', edgeOpacity: 0.7, accent: '#1f7a
 
 export function OptionB() {
   const ws = useWorkspace()
-  const [expanded, setExpanded] = useState(false)
+  const [expandedAsked, setExpanded] = useState(false)
+  const [side, toggleSide] = useSidePanel()
+  const expanded = expandedAsked || side
   const sel = ws.selectedPart
   const solo = ws.view === 'part' && sel
   const empty = ws.live && ws.connected && ws.parts.length === 0
@@ -234,10 +236,10 @@ export function OptionB() {
         )
       )}
       {ws.view === 'assembly' && <MotionAndFit />}
-      <div className={`dock${expanded ? ' is-expanded' : ''}`}>
+      <div className={`dock${expanded ? ' is-expanded' : ''}${side ? ' is-side' : ''}`}>
         {expanded ? (
           <div className="dock-thread">
-            {ws.live && <ThreadBar threads={ws.threads} />}
+            {ws.live && <ThreadBar threads={ws.threads} side={side} onSide={toggleSide} />}
             <ChatThread compact />
           </div>
         ) : (

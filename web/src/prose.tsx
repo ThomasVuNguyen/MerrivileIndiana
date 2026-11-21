@@ -44,6 +44,8 @@ function inline(text: string): ReactNode[] {
 
 // Files the AI made (charts, cleaned CSVs) and web pages. A chart shows inline.
 function Link({ label, href }: { label: string; href: string }) {
+  const cite = href.match(/^(library|shop|part):([\w-]+)$/)
+  if (cite) return <Cite kind={cite[1] as CiteKind} id={cite[2]} label={label} />
   const own = href.startsWith('/api/files/')
   if (!own && !/^https?:\/\//.test(href)) return <>{label}</>
   if (own && /\.(png|jpe?g|gif|webp)$/i.test(href))
@@ -64,4 +66,27 @@ function Link({ label, href }: { label: string; href: string }) {
 export function plainFirst(text: string) {
   const first = text.trim().split(/\n{2,}/)[0] ?? ''
   return first.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/`([^`]+)`/g, '$1').replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/^#+\s+/, '')
+}
+
+type CiteKind = 'library' | 'shop' | 'part'
+
+/** Where a fact came from: a Library file, a shop item or a part. Opens it. */
+function Cite({ kind, id, label }: { kind: CiteKind; id: string; label: string }) {
+  // Shop ids: h… hardware, t… tools (which open on the Tools tab).
+  const href = kind === 'library' ? `#/library/${id}` : kind === 'shop' ? (id.startsWith('t') ? '#/shop/tools' : `#/shop/item/${id}`) : `#/part/${id}`
+  return (
+    <a
+      className={`cite cite--${kind}`}
+      href={href}
+      title={kind === 'library' ? 'Open in the Library' : kind === 'shop' ? 'Open in the Shop' : 'Show this part'}
+      onClick={(e) => {
+        // Parts open in the project already on screen.
+        if (kind !== 'part') return
+        e.preventDefault()
+        window.dispatchEvent(new CustomEvent('merrivile:part', { detail: id }))
+      }}
+    >
+      {label}
+    </a>
+  )
 }

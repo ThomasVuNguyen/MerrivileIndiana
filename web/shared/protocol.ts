@@ -148,7 +148,7 @@ export type CallState = { id: string; tool: string; detail: string; state: 'runn
 
 export type ChatEntry =
   | { role: 'user'; text: string; faces?: FaceRef[]; images?: Attachment[] }
-  | { role: 'ai'; text: string; calls: CallState[]; model?: string; error?: boolean; notes?: ChangeNote[] }
+  | { role: 'ai'; text: string; calls: CallState[]; model?: string; error?: boolean; notes?: ChangeNote[]; startedAt?: number; ms?: number }
 
 /** The tessellation served to the viewer. Arrays are base64 little-endian. */
 export type PartMesh = {

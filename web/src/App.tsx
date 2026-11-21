@@ -59,7 +59,7 @@ function Routes() {
   else if (route === '/settings') page = <Settings />
   else if (route === '/settings/memory') page = <MemoryPage />
   else if (route.startsWith('/shop')) page = <ShopPage />
-  else if (route === '/library') page = <LibraryPage />
+  else if (route.startsWith('/library')) page = <LibraryPage />
   else if (projectId)
     page = (
       <WorkspaceProvider key={route} projectId={projectId}>

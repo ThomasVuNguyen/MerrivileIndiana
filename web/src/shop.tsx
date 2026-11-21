@@ -3,7 +3,7 @@ import type { Attachment, ChatEntry, ModelInfo, ServerEvent, ShopItem, ShopTool,
 import { api } from './api'
 import { TierMark, TIER_LABEL, TopBar } from './paper'
 import { plainFirst } from './prose'
-import { lastThread, ThreadBar } from './threads'
+import { lastThread, ThreadBar, useSidePanel } from './threads'
 import type { Threads } from './threads'
 import { ChatInput, Icon, Thread } from './ui'
 
@@ -133,7 +133,8 @@ export function ShopPage() {
   const [tab, setTab] = useState<'hardware' | 'tools'>(location.hash.includes('tools') ? 'tools' : 'hardware')
   const [mode, setModeState] = useState(() => readPref<'drawer' | 'restock'>('merrivile:shop-mode', 'drawer'))
   const [pictures, setPicturesState] = useState(() => readPref('merrivile:shop-pictures', 'on') === 'on')
-  const [open, setOpen] = useState<string | null>(null)
+  // #/shop/item/i123 (a source chip in a chat) opens that item.
+  const [open, setOpen] = useState<string | null>(() => location.hash.match(/^#\/shop\/item\/(\w+)/)?.[1] ?? null)
   const [chatOpen, setChatOpen] = useState(false)
   const input = useRef<HTMLTextAreaElement>(null)
   const setMode = (m: 'drawer' | 'restock') => (setModeState(m), writePref('merrivile:shop-mode', m))
@@ -483,12 +484,21 @@ function ShopDock({ shop, open, setOpen, inputRef }: { shop: Shop; open: boolean
   }, [])
   const last = [...shop.chat].reverse().find((m) => m.role === 'ai')
   const running = last?.role === 'ai' ? last.calls.find((c) => c.state === 'running') : undefined
+  const lastAsk = [...shop.chat].reverse().find((m) => m.role === 'user')
+  const [side, toggleSide] = useSidePanel()
+  const expanded = open || side
   return (
-    <div className={`dock shop-dock${open ? ' is-expanded' : ''}`}>
-      {open ? (
+    <div className={`dock shop-dock${expanded ? ' is-expanded' : ''}${side ? ' is-side' : ''}`}>
+      {expanded ? (
         <div className="dock-thread">
-          <ThreadBar threads={shop.threads} />
-          <Thread messages={shop.chat} busy={shop.busy && shop.threads.runningIn === shop.threads.thread} compact onToggleNote={shop.toggleNote} />
+          <ThreadBar threads={shop.threads} side={side} onSide={toggleSide} />
+          <Thread
+            messages={shop.chat}
+            busy={shop.busy && shop.threads.runningIn === shop.threads.thread}
+            compact
+            onToggleNote={shop.toggleNote}
+            onRetry={lastAsk?.role === 'user' ? () => shop.send(lastAsk.text, lastAsk.images ?? []) : undefined}
+          />
         </div>
       ) : (
         last && (
@@ -509,6 +519,7 @@ function ShopDock({ shop, open, setOpen, inputRef }: { shop: Shop; open: boolean
         <ChatInput
           textRef={inputRef}
           placeholder="Paste an Amazon link, a screenshot or a photo of your bins, or say what you used up…"
+          suggestions={['Running low?', 'I used some…', 'From a photo']}
           footer={
             model ? (
               <span className="composer-model">{model.label}</span>

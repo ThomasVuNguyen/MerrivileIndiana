@@ -5,7 +5,9 @@ import type { Attachment, FaceRef } from '../shared/protocol'
 import { clock, FILES_AT_ONCE, filesFrom, pictured, pool, shownUrl, sizeLabel, uploadFile } from './attach'
 import { NoteChip } from './paper'
 import { Prose } from './prose'
-import type { Message, Part } from './data'
+import type { Message, Part, ToolCall } from './data'
+import { chatNext } from './flags'
+import { seconds, stepDetail, stepLabel, stepSummary } from './steps'
 import { useWorkspace } from './workspace'
 
 const PATHS: Record<string, string> = {
@@ -33,6 +35,11 @@ const PATHS: Record<string, string> = {
   layers: 'm12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5',
   stop: 'M7 7h10v10H7z',
   clip: 'm20 11-8.5 8.5a5 5 0 0 1-7-7L13 4a3.3 3.3 0 0 1 4.7 4.7L9.2 17.2a1.7 1.7 0 0 1-2.4-2.4L14.5 7',
+  copy: 'M9 9h11v11H9zM5 15H4V4h11v1',
+  retry: 'M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5',
+  mic: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5 11a7 7 0 0 0 14 0M12 18v3',
+  panel: 'M3 4h18v16H3zM15 4v16',
+  compose: 'M12 4H5v15h15v-7M17.5 3.5l3 3L12 15H9v-3z',
 }
 
 export function Icon({ name, size = 16 }: { name: keyof typeof PATHS | string; size?: number }) {
@@ -55,7 +62,17 @@ export function ChatThread({ compact }: { compact?: boolean }) {
   const ws = useWorkspace()
   // "Thinking…" only in the chat the AI is working in.
   const busy = ws.busy && (!ws.live || ws.threads.runningIn === ws.threads.thread)
-  return <Thread messages={ws.messages} busy={busy} live={ws.live} compact={compact} onToggleNote={ws.toggleNote} />
+  const lastAsk = [...ws.messages].reverse().find((m) => m.role === 'user')
+  return (
+    <Thread
+      messages={ws.messages}
+      busy={busy}
+      live={ws.live}
+      compact={compact}
+      onToggleNote={ws.toggleNote}
+      onRetry={ws.live && lastAsk?.role === 'user' ? () => ws.send(lastAsk.text, lastAsk.images ?? []) : undefined}
+    />
+  )
 }
 
 /** A chat transcript; shared by the design dock and the Shop. */
@@ -65,12 +82,15 @@ export function Thread({
   live = true,
   compact,
   onToggleNote,
+  onRetry,
 }: {
   messages: Message[]
   busy: boolean
   live?: boolean
   compact?: boolean
   onToggleNote?: (index: number, changeId: string) => void
+  /** Sends the person's last message again. */
+  onRetry?: () => void
 }) {
   const end = useRef<HTMLDivElement>(null)
   const last = messages[messages.length - 1]
@@ -82,9 +102,16 @@ export function Thread({
     <div className={`thread${compact ? ' thread--compact' : ''}`}>
       {live && !messages.length && <p className="thread-empty">A new chat. Your shop, tools, memory, Library and parts carry over; only the conversation starts fresh.</p>}
       {messages.map((m, i) => (
-        <ChatMessage key={i} m={m} onToggleNote={onToggleNote && ((changeId) => onToggleNote(i, changeId))} />
+        <ChatMessage
+          key={i}
+          m={m}
+          working={busy && i === messages.length - 1}
+          onRetry={!busy && i === messages.length - 1 ? onRetry : undefined}
+          onToggleNote={onToggleNote && ((changeId) => onToggleNote(i, changeId))}
+        />
       ))}
-      {waiting && (
+      {chatNext && busy && last?.role === 'user' && <Activity calls={[]} working />}
+      {!chatNext && waiting && (
         <div className="msg msg--ai">
           <div className="msg-who">AI</div>
           <div className="call is-running">
@@ -98,7 +125,7 @@ export function Thread({
   )
 }
 
-export function ChatMessage({ m, onToggleNote }: { m: Message; onToggleNote?: (changeId: string) => void }) {
+export function ChatMessage({ m, working, onRetry, onToggleNote }: { m: Message; working?: boolean; onRetry?: () => void; onToggleNote?: (changeId: string) => void }) {
   if (m.role === 'user')
     return (
       <div className="msg msg--user">
@@ -129,6 +156,21 @@ export function ChatMessage({ m, onToggleNote }: { m: Message; onToggleNote?: (c
         ))}
       </div>
     )
+  if (chatNext)
+    return (
+      <div className={`msg msg--ai${m.error ? ' is-error' : ''}`}>
+        <Activity calls={m.calls ?? []} working={working} startedAt={m.startedAt} ms={m.ms} />
+        {m.text && (
+          <div className="msg-text msg-text--prose">
+            <Prose text={m.text} />
+          </div>
+        )}
+        {m.notes?.map((n) => (
+          <NoteChip key={n.changeId} note={n} onToggle={onToggleNote && (() => onToggleNote(n.changeId))} />
+        ))}
+        {!working && m.text && <MessageActions text={m.text} onRetry={onRetry} />}
+      </div>
+    )
   return (
     <div className={`msg msg--ai${m.error ? ' is-error' : ''}`}>
       <div className="msg-who">{m.model ?? 'AI'}</div>
@@ -156,6 +198,70 @@ export function ChatMessage({ m, onToggleNote }: { m: Message; onToggleNote?: (c
   )
 }
 
+/** What the AI did, as one line: "Worked for 12 s · Checked the shop, added 66 items ▾"; live while it works. */
+function Activity({ calls, working, startedAt, ms }: { calls: ToolCall[]; working?: boolean; startedAt?: number; ms?: number }) {
+  const [open, setOpen] = useState(false)
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    if (!working) return
+    const t = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(t)
+  }, [working])
+  if (!calls.length && !working) return null
+  const running = calls.find((c) => c.state === 'running')
+  const elapsed = working && startedAt ? now - startedAt : 0
+  const failed = calls.filter((c) => c.state === 'error').length
+  return (
+    <div className={`activity${working ? ' is-working' : ''}`}>
+      <button type="button" className="activity-head" onClick={() => setOpen((o) => !o)} disabled={!calls.length} aria-expanded={open}>
+        {working && <span className="call-dot" />}
+        <span className="activity-what">{working ? `${running ? stepLabel(running) : 'Thinking'}…` : ms !== undefined ? `Worked for ${seconds(ms)}` : 'Worked'}</span>
+        {working && elapsed > 1500 && <span className="faint">{seconds(elapsed)}</span>}
+        {!working && <span className="activity-sum">· {stepSummary(calls)}</span>}
+        {!working && failed > 0 && <span className="activity-err">· {failed} retried</span>}
+        {calls.length > 0 && <span className="activity-chev">{open ? '▴' : '▾'}</span>}
+      </button>
+      {open && (
+        <ol className="activity-steps">
+          {calls.map((c, i) => (
+            <li key={c.id ?? i} className={c.state === 'error' ? 'is-error' : c.state === 'running' ? 'is-running' : ''}>
+              <span>{stepLabel(c)}</span>
+              <span className="faint">{stepDetail(c)}</span>
+              <span className="faint">{c.ms === undefined || c.ms < 100 ? '' : c.ms < 1000 ? `${c.ms} ms` : seconds(c.ms)}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  )
+}
+
+function MessageActions({ text, onRetry }: { text: string; onRetry?: () => void }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="msg-actions">
+      <button
+        type="button"
+        aria-label="Copy"
+        title="Copy"
+        onClick={() =>
+          navigator.clipboard.writeText(text).then(() => {
+            setCopied(true)
+            window.setTimeout(() => setCopied(false), 1400)
+          })
+        }
+      >
+        {copied ? <Icon name="check" size={13} /> : <Icon name="copy" size={13} />}
+      </button>
+      {onRetry && (
+        <button type="button" aria-label="Retry" title="Send your last message again" onClick={onRetry}>
+          <Icon name="retry" size={13} />
+        </button>
+      )}
+    </div>
+  )
+}
+
 export function Composer({ placeholder = 'Describe a part or a change…', footer }: { placeholder?: string; footer?: ReactNode }) {
   const ws = useWorkspace()
   return (
@@ -167,6 +273,7 @@ export function Composer({ placeholder = 'Describe a part or a change…', foote
       onStop={ws.stop}
       attachments={ws.live}
       onSend={(text, images) => ws.send(text, images)}
+      suggestions={ws.parts.length ? ['Hardware list', 'Printable on my A1', 'Check the fit'] : ['From a sketch', 'NEMA 17 bracket']}
       chips={
         ws.faces.length > 0 && (
           <div className="face-chips">
@@ -199,6 +306,7 @@ export function ChatInput({
   onSend,
   attachments = true,
   textRef,
+  suggestions,
 }: {
   placeholder: string
   footer?: ReactNode
@@ -209,8 +317,13 @@ export function ChatInput({
   onSend: (text: string, images: Attachment[]) => void
   attachments?: boolean
   textRef?: React.RefObject<HTMLTextAreaElement | null>
+  /** Starters for an empty box, e.g. "What's running low?". */
+  suggestions?: string[]
 }) {
   const [text, setText] = useState('')
+  const [listening, setListening] = useState<number | null>(null)
+  const ownRef = useRef<HTMLTextAreaElement>(null)
+  const box = textRef ?? ownRef
   const [images, setImages] = useState<Attachment[]>([])
   const [pending, setPending] = useState<{ id: number; name: string; progress: number }[]>([])
   const uploading = pending.length
@@ -296,7 +409,7 @@ export function ChatInput({
         </div>
       )}
       <textarea
-        ref={textRef}
+        ref={box}
         value={text}
         rows={2}
         placeholder={placeholder}
@@ -317,8 +430,28 @@ export function ChatInput({
       />
       {error && <p className="attach-error">{error}</p>}
       <div className="composer-row">
-        {footer}
+        {chatNext && suggestions && !text && !images.length && !listening ? (
+          <span className="suggestions">
+            {suggestions.map((s) => (
+              <button
+                type="button"
+                key={s}
+                className="suggestion"
+                onClick={() => {
+                  setText(s)
+                  box.current?.focus()
+                }}
+              >
+                {s}
+              </button>
+            ))}
+          </span>
+        ) : (
+          !chatNext && footer
+        )}
+        {listening !== null && <Listening since={listening} />}
         <span className="composer-actions">
+          {chatNext && footer}
           {attachments && (
             <>
               <button type="button" className="attach-btn" onClick={() => picker.current?.click()} aria-label="Attach files" title="Attach files up to 5 GB: photos (HEIC too), PDFs, CSV/text, STEP, anything (or paste and drop them)">
@@ -336,6 +469,17 @@ export function ChatInput({
                 }}
               />
             </>
+          )}
+          {chatNext && (
+            <button
+              type="button"
+              className={`attach-btn mic${listening !== null ? ' is-on' : ''}`}
+              aria-label={listening !== null ? 'Stop listening' : 'Speak'}
+              title="Speak instead of typing (prototype: no transcription yet)"
+              onClick={() => setListening((l) => (l === null ? Date.now() : null))}
+            >
+              <Icon name="mic" size={15} />
+            </button>
           )}
           <button className="send" type="submit" disabled={canStop ? false : !ready} aria-label={canStop ? 'Stop' : 'Send'}>
             <Icon name={busy ? 'stop' : 'send'} size={15} />
@@ -551,5 +695,20 @@ export function ModelPicker() {
         </div>
       )}
     </div>
+  )
+}
+
+/** The mic is on: a pulsing dot and the time so far. */
+function Listening({ since }: { since: number }) {
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 500)
+    return () => window.clearInterval(t)
+  }, [])
+  return (
+    <span className="listening">
+      <i />
+      Listening · {clock((now - since) / 1000)}
+    </span>
   )
 }

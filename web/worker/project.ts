@@ -174,7 +174,7 @@ export class Project extends DurableObject<Env> {
     this.pushChat({ role: 'user', text, ...(faces.length && { faces }), ...(images.length && { images }) })
     const account = this.account()
     const cfg = await account.modelConfig(modelId)
-    const entry: AiEntry = { role: 'ai', text: '', calls: [], model: cfg?.label }
+    const entry: AiEntry = { role: 'ai', text: '', calls: [], model: cfg?.label, startedAt: Date.now() }
     const index = this.pushChat(entry)
     const projectId = this.projectId()
     const projectName = (await account.project(projectId))?.name
@@ -250,6 +250,7 @@ export class Project extends DurableObject<Env> {
       if (!(err instanceof ModelError)) console.error(err)
     } finally {
       for (const c of entry.calls) if (c.state === 'running') c.state = 'error'
+      entry.ms = Date.now() - entry.startedAt!
       this.saveChat(index, entry)
       this.toThread({ type: 'chat', entry, index })
       this.abort = null
@@ -688,6 +689,10 @@ function describe(p: PartDoc, withSource = true) {
     )
   }
   if (p.status === 'error' && p.error) lines.push(`last error: ${p.error.type}: ${p.error.message}`)
+  // What it's bolted together with and how it's made, so the AI doesn't say "no hardware listed".
+  if (p.hardware?.length) lines.push(`hardware: ${p.hardware.map((h) => `${h.qty}× ${h.name}${h.kind && !h.name.toLowerCase().includes(h.kind.toLowerCase()) ? ` ${h.kind}` : ''} (${h.tier}${h.itemId ? `, shop ${h.itemId}` : ''})`).join('; ')}`)
+  else lines.push('hardware: none listed yet')
+  if (p.madeWith?.length) lines.push(`made with: ${p.madeWith.join('; ')}`)
   if (withSource) lines.push('source:', '```python', p.source, '```')
   return lines.join('\n')
 }

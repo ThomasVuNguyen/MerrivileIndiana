@@ -355,7 +355,7 @@ export class Account extends DurableObject<Env> {
     this.broadcast({ type: 'running', running: true, thread })
     this.pushChat(thread, { role: 'user', text, ...(images.length && { images }) })
     const cfg = this.modelConfig(modelId)
-    const entry: AiEntry = { role: 'ai', text: '', calls: [], model: cfg?.label }
+    const entry: AiEntry = { role: 'ai', text: '', calls: [], model: cfg?.label, startedAt: Date.now() }
     const index = this.pushChat(thread, entry)
     const trace = new Trace(this.env, {
       name: 'shop-run',
@@ -399,6 +399,7 @@ export class Account extends DurableObject<Env> {
       if (!(err instanceof ModelError)) console.error(err)
     } finally {
       for (const c of entry.calls) if (c.state === 'running') c.state = 'error'
+      entry.ms = Date.now() - entry.startedAt!
       this.threads.save(thread, index, entry)
       this.toThread(thread, { type: 'chat', entry, index })
       this.abort = null
