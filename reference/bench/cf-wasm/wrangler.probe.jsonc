@@ -1,0 +1,1 @@
+{ "name": "cf-wasm-probe", "main": "src/probe.mjs", "compatibility_date": "2026-11-21" }

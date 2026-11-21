@@ -1,0 +1,14 @@
+{
+  "name": "cf-wasm-bench",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "dryrun": "wrangler deploy --dry-run --outdir dist"
+  },
+  "dependencies": {
+    "replicad": "^1.2.1",
+    "replicad-opencascadejs": "^1.2.1",
+    "wrangler": "^4.166.0"
+  }
+}

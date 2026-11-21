@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+reference/repos/
+reference/bench/**/node_modules/
+reference/bench/**/*.stl
+reference/bench/**/*.step
+reference/bench/**/*.glb

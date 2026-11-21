@@ -1,0 +1,618 @@
+{
+  "name": "QDD Actuator 110",
+  "parts": [
+    {
+      "id": "housing",
+      "name": "Housing",
+      "color": "#b9bcc2",
+      "material": "Al 6061-T6",
+      "qty": 1,
+      "volume_mm3": 69735.0,
+      "mass_g": 188.3,
+      "bbox": [
+        115.3,
+        115.3,
+        34.0
+      ],
+      "faces": 27,
+      "fn": "housing"
+    },
+    {
+      "id": "rear-cover",
+      "name": "Rear cover",
+      "color": "#9ea2a8",
+      "material": "Al 6061-T6",
+      "qty": 1,
+      "volume_mm3": 39054.6,
+      "mass_g": 105.4,
+      "bbox": [
+        115.3,
+        115.3,
+        4.0
+      ],
+      "faces": 31,
+      "fn": "rear_cover"
+    },
+    {
+      "id": "stator-core",
+      "name": "Stator core",
+      "color": "#6d7178",
+      "material": "M19 laminations",
+      "qty": 1,
+      "volume_mm3": 42341.9,
+      "mass_g": 323.9,
+      "bbox": [
+        84.0,
+        84.0,
+        16.0
+      ],
+      "faces": 99,
+      "fn": "stator_core"
+    },
+    {
+      "id": "rotor-can",
+      "name": "Rotor can",
+      "color": "#3f444b",
+      "material": "1018 steel",
+      "qty": 1,
+      "volume_mm3": 38052.5,
+      "mass_g": 299.5,
+      "bbox": [
+        98.0,
+        98.0,
+        24.5
+      ],
+      "faces": 6,
+      "fn": "rotor_can"
+    },
+    {
+      "id": "magnet",
+      "name": "Magnet",
+      "color": "#c8a24a",
+      "material": "N52 NdFeB",
+      "qty": 14,
+      "volume_mm3": 350.0,
+      "mass_g": 2.6,
+      "bbox": [
+        2.5,
+        10.0,
+        14.0
+      ],
+      "faces": 6,
+      "fn": "magnet"
+    },
+    {
+      "id": "sun-gear",
+      "name": "Sun gear",
+      "color": "#d26b3f",
+      "material": "PA12 (MJF)",
+      "qty": 1,
+      "volume_mm3": 2622.4,
+      "mass_g": 2.6,
+      "bbox": [
+        22.0,
+        21.9,
+        9.0
+      ],
+      "faces": 115,
+      "fn": "sun_gear"
+    },
+    {
+      "id": "planet",
+      "name": "Planet gear",
+      "color": "#e08a55",
+      "material": "PA12 (MJF)",
+      "qty": 3,
+      "volume_mm3": 2645.2,
+      "mass_g": 2.7,
+      "bbox": [
+        23.0,
+        23.1,
+        8.0
+      ],
+      "faces": 123,
+      "fn": "planet"
+    },
+    {
+      "id": "ring-gear",
+      "name": "Ring gear",
+      "color": "#8a8f96",
+      "material": "PA12 (MJF)",
+      "qty": 1,
+      "volume_mm3": 46379.1,
+      "mass_g": 46.8,
+      "bbox": [
+        100.0,
+        100.0,
+        10.0
+      ],
+      "faces": 147,
+      "fn": "ring_gear"
+    },
+    {
+      "id": "carrier",
+      "name": "Carrier plate",
+      "color": "#5a6068",
+      "material": "Al 7075",
+      "qty": 1,
+      "volume_mm3": 8133.6,
+      "mass_g": 22.9,
+      "bbox": [
+        60.0,
+        60.0,
+        3.0
+      ],
+      "faces": 7,
+      "fn": "carrier"
+    },
+    {
+      "id": "bearing",
+      "name": "Crossed roller bearing",
+      "color": "#c4c7cc",
+      "material": "52100 steel",
+      "qty": 1,
+      "volume_mm3": 29926.4,
+      "mass_g": 233.7,
+      "bbox": [
+        100.0,
+        100.0,
+        7.0
+      ],
+      "faces": 68,
+      "fn": "bearing"
+    },
+    {
+      "id": "output-flange",
+      "name": "Output flange",
+      "color": "#2f6fd6",
+      "material": "Al 7075",
+      "qty": 1,
+      "volume_mm3": 30283.7,
+      "mass_g": 85.1,
+      "bbox": [
+        78.0,
+        78.0,
+        12.0
+      ],
+      "faces": 26,
+      "fn": "output_flange"
+    },
+    {
+      "id": "encoder-board",
+      "name": "Encoder board",
+      "color": "#2f8a4c",
+      "material": "FR-4",
+      "qty": 1,
+      "volume_mm3": 1548.2,
+      "mass_g": 2.9,
+      "bbox": [
+        34.0,
+        28.0,
+        2.6
+      ],
+      "faces": 11,
+      "fn": "encoder_board"
+    },
+    {
+      "id": "encoder-magnet",
+      "name": "Encoder magnet",
+      "color": "#c8a24a",
+      "material": "N35 NdFeB",
+      "qty": 1,
+      "volume_mm3": 70.7,
+      "mass_g": 0.5,
+      "bbox": [
+        6.0,
+        6.0,
+        2.5
+      ],
+      "faces": 3,
+      "fn": "encoder_magnet"
+    }
+  ],
+  "groups": [
+    {
+      "name": "Housing",
+      "instances": [
+        {
+          "id": "housing-1",
+          "part": "housing",
+          "pos": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rot": 0.0,
+          "motion": "fixed"
+        },
+        {
+          "id": "rear-cover-1",
+          "part": "rear-cover",
+          "pos": [
+            0.0,
+            0.0,
+            -4
+          ],
+          "rot": 0.0,
+          "motion": "fixed"
+        }
+      ]
+    },
+    {
+      "name": "Stator",
+      "instances": [
+        {
+          "id": "stator-core-1",
+          "part": "stator-core",
+          "pos": [
+            0.0,
+            0.0,
+            6
+          ],
+          "rot": 0.0,
+          "motion": "fixed"
+        }
+      ]
+    },
+    {
+      "name": "Rotor",
+      "instances": [
+        {
+          "id": "rotor-can-1",
+          "part": "rotor-can",
+          "pos": [
+            0.0,
+            0.0,
+            4
+          ],
+          "rot": 0.0,
+          "motion": "rotor"
+        },
+        {
+          "id": "magnet-1",
+          "part": "magnet",
+          "pos": [
+            44.45,
+            0.0,
+            16
+          ],
+          "rot": 0.0,
+          "motion": "rotor"
+        },
+        {
+          "id": "magnet-2",
+          "part": "magnet",
+          "pos": [
+            40.048,
+            19.286,
+            16
+          ],
+          "rot": 25.714285714285715,
+          "motion": "rotor"
+        },
+        {
+          "id": "magnet-3",
+          "part": "magnet",
+          "pos": [
+            27.714,
+            34.752,
+            16
+          ],
+          "rot": 51.42857142857143,
+          "motion": "rotor"
+        },
+        {
+          "id": "magnet-4",
+          "part": "magnet",
+          "pos": [
+            9.891,
+            43.336,
+            16
+          ],
+          "rot": 77.14285714285714,
+          "motion": "rotor"
+        },
+        {
+          "id": "magnet-5",
+          "part": "magnet",
+          "pos": [
+            -9.891,
+            43.336,
+            16
+          ],
+          "rot": 102.85714285714286,
+          "motion": "rotor"
+        },
+        {
+          "id": "magnet-6",
+          "part": "magnet",
+          "pos": [
+            -27.714,
+            34.752,
+            16
+          ],
+          "rot": 128.57142857142858,
+          "motion": "rotor"
+        },
+        {
+          "id": "magnet-7",
+          "part": "magnet",
+          "pos": [
+            -40.048,
+            19.286,
+            16
+          ],
+          "rot": 154.28571428571428,
+          "motion": "rotor"
+        },
+        {
+          "id": "magnet-8",
+          "part": "magnet",
+          "pos": [
+            -44.45,
+            0.0,
+            16
+          ],
+          "rot": 180.0,
+          "motion": "rotor"
+        },
+        {
+          "id": "magnet-9",
+          "part": "magnet",
+          "pos": [
+            -40.048,
+            -19.286,
+            16
+          ],
+          "rot": 205.71428571428572,
+          "motion": "rotor"
+        },
+        {
+          "id": "magnet-10",
+          "part": "magnet",
+          "pos": [
+            -27.714,
+            -34.752,
+            16
+          ],
+          "rot": 231.42857142857144,
+          "motion": "rotor"
+        },
+        {
+          "id": "magnet-11",
+          "part": "magnet",
+          "pos": [
+            -9.891,
+            -43.336,
+            16
+          ],
+          "rot": 257.14285714285717,
+          "motion": "rotor"
+        },
+        {
+          "id": "magnet-12",
+          "part": "magnet",
+          "pos": [
+            9.891,
+            -43.336,
+            16
+          ],
+          "rot": 282.8571428571429,
+          "motion": "rotor"
+        },
+        {
+          "id": "magnet-13",
+          "part": "magnet",
+          "pos": [
+            27.714,
+            -34.752,
+            16
+          ],
+          "rot": 308.57142857142856,
+          "motion": "rotor"
+        },
+        {
+          "id": "magnet-14",
+          "part": "magnet",
+          "pos": [
+            40.048,
+            -19.286,
+            16
+          ],
+          "rot": 334.2857142857143,
+          "motion": "rotor"
+        },
+        {
+          "id": "sun-gear-1",
+          "part": "sun-gear",
+          "pos": [
+            0.0,
+            0.0,
+            28.5
+          ],
+          "rot": 0.0,
+          "motion": "rotor"
+        }
+      ]
+    },
+    {
+      "name": "Gearbox",
+      "instances": [
+        {
+          "id": "ring-gear-1",
+          "part": "ring-gear",
+          "pos": [
+            0.0,
+            0.0,
+            28.5
+          ],
+          "rot": 0.0,
+          "motion": "fixed"
+        },
+        {
+          "id": "planet-1",
+          "part": "planet",
+          "pos": [
+            21.0,
+            0.0,
+            29
+          ],
+          "rot": 0.0,
+          "motion": "planet"
+        },
+        {
+          "id": "planet-2",
+          "part": "planet",
+          "pos": [
+            -10.5,
+            18.187,
+            29
+          ],
+          "rot": 120.0,
+          "motion": "planet"
+        },
+        {
+          "id": "planet-3",
+          "part": "planet",
+          "pos": [
+            -10.5,
+            -18.187,
+            29
+          ],
+          "rot": 240.0,
+          "motion": "planet"
+        },
+        {
+          "id": "carrier-1",
+          "part": "carrier",
+          "pos": [
+            0.0,
+            0.0,
+            37.5
+          ],
+          "rot": 0.0,
+          "motion": "carrier"
+        }
+      ]
+    },
+    {
+      "name": "Output",
+      "instances": [
+        {
+          "id": "bearing-1",
+          "part": "bearing",
+          "pos": [
+            0.0,
+            0.0,
+            40.5
+          ],
+          "rot": 0.0,
+          "motion": "fixed"
+        },
+        {
+          "id": "output-flange-1",
+          "part": "output-flange",
+          "pos": [
+            0.0,
+            0.0,
+            40.5
+          ],
+          "rot": 0.0,
+          "motion": "carrier"
+        }
+      ]
+    },
+    {
+      "name": "Encoders",
+      "instances": [
+        {
+          "id": "encoder-board-1",
+          "part": "encoder-board",
+          "pos": [
+            0.0,
+            0.0,
+            -10.6
+          ],
+          "rot": 0.0,
+          "motion": "fixed"
+        },
+        {
+          "id": "encoder-magnet-1",
+          "part": "encoder-magnet",
+          "pos": [
+            0.0,
+            0.0,
+            -7.5
+          ],
+          "rot": 0.0,
+          "motion": "rotor"
+        }
+      ]
+    }
+  ],
+  "gears": {
+    "sun": 14,
+    "planet": 15,
+    "ring": 36
+  },
+  "checks": {
+    "pose_deg": 0,
+    "interferences": [
+      {
+        "a": "sun-gear-1",
+        "b": "planet-2",
+        "volume_mm3": 20.52,
+        "at": [
+          -4.9,
+          9.0,
+          33.0
+        ],
+        "mesh": "clash-1"
+      },
+      {
+        "a": "sun-gear-1",
+        "b": "planet-3",
+        "volume_mm3": 20.52,
+        "at": [
+          -4.9,
+          -9.0,
+          33.0
+        ],
+        "mesh": "clash-2"
+      },
+      {
+        "a": "ring-gear-1",
+        "b": "planet-1",
+        "volume_mm3": 47.6,
+        "at": [
+          31.4,
+          0.0,
+          33.0
+        ],
+        "mesh": "clash-3"
+      },
+      {
+        "a": "ring-gear-1",
+        "b": "planet-2",
+        "volume_mm3": 47.61,
+        "at": [
+          -15.5,
+          26.7,
+          33.0
+        ],
+        "mesh": "clash-4"
+      },
+      {
+        "a": "ring-gear-1",
+        "b": "planet-3",
+        "volume_mm3": 47.61,
+        "at": [
+          -15.5,
+          -26.7,
+          33.0
+        ],
+        "mesh": "clash-5"
+      }
+    ]
+  }
+}

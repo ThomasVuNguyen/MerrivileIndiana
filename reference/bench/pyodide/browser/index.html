@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>build123d in Pyodide (browser bench)</title></head>
+<body>
+<pre id="log"></pre>
+<script type="module">
+const log = (s) => { document.getElementById("log").textContent += s + "\n"; console.log(s); };
+const t = (label, t0) => log(`[t] ${label}: ${(performance.now() - t0).toFixed(0)} ms`);
+const mem = (py, label) => log(`[mem] ${label}: wasmHEAP=${(py._module.HEAPU8.length / 1048576).toFixed(0)} MB jsHeap=${performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(0) : "?"} MB`);
+window.__done = false; window.__result = null;
+try {
+  const tAll = performance.now();
+  let t0 = performance.now();
+  const { loadPyodide } = await import("https://cdn.jsdelivr.net/pyodide/v314.0.8/full/pyodide.mjs");
+  const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v314.0.8/full/" });
+  t("loadPyodide (CDN)", t0);
+  await py.loadPackage("micropip");
+  mem(py, "after pyodide");
+  const bootstrap = await (await fetch("./bootstrap.py")).text();
+  py.FS.writeFile("/bootstrap.py", bootstrap);
+  t0 = performance.now();
+  await py.runPythonAsync(`
+import sys
+sys.path.insert(0, "/")
+import bootstrap
+await bootstrap.bootstrap(build123d_ref="0.13.0")
+`);
+  t("bootstrap (full OCP.wasm install, all deps)", t0);
+  mem(py, "after install");
+  t0 = performance.now(); py.runPython("import build123d"); t("import build123d", t0);
+  mem(py, "after import build123d");
+  const bench = await (await fetch("./bench_part.py")).text();
+  py.FS.writeFile("/bench_part.py", bench); py.FS.mkdirTree("/out");
+  const results = [];
+  for (let i = 0; i < 3; i++) {
+    t0 = performance.now();
+    const r = py.runPython(`import json, bench_part; json.dumps(bench_part.main("/out"))`);
+    t(`bench_part.main run ${i + 1}`, t0);
+    results.push(JSON.parse(r.replace(/NaN/g, "null")));
+  }
+  log(JSON.stringify(results[0], null, 1));
+  mem(py, "end");
+  t("TOTAL wall", tAll);
+  window.__result = { results };
+} catch (e) { log("ERROR: " + (e && e.message ? e.message : String(e)).slice(0, 4000)); }
+window.__done = true;
+</script>
+</body>
+</html>

@@ -1,0 +1,42 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "merrivile",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "DIRECTORY", "class_name": "Directory" },
+      { "name": "ACCOUNT", "class_name": "Account" },
+      { "name": "PROJECT", "class_name": "Project" },
+      { "name": "GEOMETRY", "class_name": "Geometry" },
+      { "name": "VIDEO", "class_name": "Video" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Account", "Project"] },
+    { "tag": "v2", "new_sqlite_classes": ["Directory"] },
+    { "tag": "v3", "new_sqlite_classes": ["Geometry"] },
+    { "tag": "v4", "new_sqlite_classes": ["Video"] }
+  ],
+  // build123d runs here. 4 GiB: OpenCASCADE takes ~470 MB before any part.
+  // Replace every instance at once on deploy, so a new image is live right away.
+  // Videos use the same image on a bigger instance (2 vCPU, 16 GB disk for files up to 5 GB).
+  "containers": [
+    { "class_name": "Geometry", "image": "../geometry/Dockerfile", "instance_type": "standard-1", "max_instances": 3, "rollout_step_percentage": 100 },
+    { "class_name": "Video", "image": "../geometry/Dockerfile", "instance_type": "standard-3", "max_instances": 2, "rollout_step_percentage": 100 }
+  ],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "merrivile-files" }],
+  "observability": { "enabled": true },
+  // Served on merry.beenex.company; workers.dev stays on as a fallback.
+  "routes": [{ "pattern": "merry.beenex.company", "custom_domain": true }],
+  "workers_dev": true,
+  // Keys are secrets: wrangler secret put LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY
+  "vars": { "LANGFUSE_BASE_URL": "https://fuse.beenex.cloud" },
+  // Locally `npm run geometry` serves builds (GEOMETRY_URL in .dev.vars) instead of Docker.
+  "dev": { "enable_containers": false }
+}

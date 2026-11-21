@@ -1,0 +1,5 @@
+build123d==0.13.0
+bd_warehouse==0.4.0
+numpy
+pillow
+pillow-heif
