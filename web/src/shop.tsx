@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Attachment, ChatEntry, ModelInfo, ServerEvent, ShopItem, ShopTool, Tier } from '../shared/protocol'
+import type { Attachment, ChatEntry, ModelInfo, ServerEvent, ShopItem, ShopTool, ThreadInfo, Tier } from '../shared/protocol'
 import { api } from './api'
 import { TierMark, TIER_LABEL, TopBar } from './paper'
 import { plainFirst } from './prose'
+import { lastThread, ThreadBar } from './threads'
+import type { Threads } from './threads'
 import { ChatInput, Icon, Thread } from './ui'
 
 /** The shop's live state: items, tools and the shop chat, over one socket. */
@@ -12,6 +14,9 @@ function useShop() {
   const [chat, setChat] = useState<ChatEntry[]>([])
   const [busy, setBusy] = useState(false)
   const [ready, setReady] = useState(false)
+  const [threadList, setThreadList] = useState<ThreadInfo[]>([])
+  const [thread, setThread] = useState('')
+  const [runningIn, setRunningIn] = useState<string | null>(null)
   const socket = useRef<WebSocket | null>(null)
 
   useEffect(() => {
@@ -19,7 +24,7 @@ function useShop() {
     let retry = 0
     let timer: number | undefined
     const connect = () => {
-      const sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/shop/socket`)
+      const sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/shop/socket?thread=${lastThread.get('shop')}`)
       socket.current = sock
       sock.onopen = () => (retry = 0)
       sock.onclose = () => {
@@ -32,7 +37,15 @@ function useShop() {
           setTools(ev.tools)
           setChat(ev.chat)
           setBusy(ev.running)
+          setThreadList(ev.threads)
+          setThread(ev.thread)
           setReady(true)
+        } else if (ev.type === 'thread') {
+          setThread(ev.thread)
+          setChat(ev.chat)
+          lastThread.set('shop', ev.thread)
+        } else if (ev.type === 'threads') {
+          setThreadList(ev.threads)
         } else if (ev.type === 'shop') {
           setItems(ev.items)
           setTools(ev.tools)
@@ -54,7 +67,10 @@ function useShop() {
           )
         } else if (ev.type === 'notes') {
           setChat((c) => c.map((x, i) => (i === ev.index && x.role === 'ai' ? { ...x, notes: ev.notes } : x)))
-        } else if (ev.type === 'running') setBusy(ev.running)
+        } else if (ev.type === 'running') {
+          setBusy(ev.running)
+          setRunningIn(ev.running ? (ev.thread ?? null) : null)
+        }
       }
     }
     connect()
@@ -78,7 +94,14 @@ function useShop() {
     setTools((all) => all.map((t) => (t.id === id ? { ...t, have } : t)))
     return fetch(`/api/shop/tools/${id}`, { method: 'PATCH', body: JSON.stringify({ have }) })
   }, [])
-  return { items, tools, chat, busy, ready, send, stop, toggleNote, patchItem, removeItem, setHave }
+  const threads: Threads = {
+    threads: threadList,
+    thread,
+    runningIn,
+    open: (id) => socket.current?.send(JSON.stringify({ type: 'open', thread: id })),
+    remove: (id) => socket.current?.send(JSON.stringify({ type: 'delete-thread', thread: id })),
+  }
+  return { items, tools, chat, busy, ready, threads, send, stop, toggleNote, patchItem, removeItem, setHave }
 }
 
 type Shop = ReturnType<typeof useShop>
@@ -464,7 +487,8 @@ function ShopDock({ shop, open, setOpen, inputRef }: { shop: Shop; open: boolean
     <div className={`dock shop-dock${open ? ' is-expanded' : ''}`}>
       {open ? (
         <div className="dock-thread">
-          <Thread messages={shop.chat} busy={shop.busy} compact onToggleNote={shop.toggleNote} />
+          <ThreadBar threads={shop.threads} />
+          <Thread messages={shop.chat} busy={shop.busy && shop.threads.runningIn === shop.threads.thread} compact onToggleNote={shop.toggleNote} />
         </div>
       ) : (
         last && (

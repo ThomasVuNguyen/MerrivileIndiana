@@ -23,8 +23,8 @@ export const api = {
   testModel: (id: string) => call<{ ok: true; name: string; ms: number } | { ok: false; error: string }>(`/api/models/${id}/test`, post()),
   projects: () => call<ProjectInfo[]>('/api/projects'),
   createProject: (name: string) => call<ProjectInfo>('/api/projects', post({ name })),
-  importStep: (projectId: string, file: File) =>
-    call<{ ok: true }>(`/api/projects/${projectId}/import`, { method: 'POST', body: file, headers: { 'x-filename': encodeURIComponent(file.name) } }),
+  importStep: (projectId: string, file: File, thread: string) =>
+    call<{ ok: true }>(`/api/projects/${projectId}/import`, { method: 'POST', body: file, headers: { 'x-filename': encodeURIComponent(file.name), 'x-thread': thread } }),
 }
 
 export const socketUrl = (projectId: string) => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/projects/${projectId}/socket`

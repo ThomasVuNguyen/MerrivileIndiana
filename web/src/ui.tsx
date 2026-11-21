@@ -53,7 +53,9 @@ export function IconButton({ icon, label, onClick, active, kbd }: { icon: string
 
 export function ChatThread({ compact }: { compact?: boolean }) {
   const ws = useWorkspace()
-  return <Thread messages={ws.messages} busy={ws.busy} live={ws.live} compact={compact} onToggleNote={ws.toggleNote} />
+  // "Thinking…" only in the chat the AI is working in.
+  const busy = ws.busy && (!ws.live || ws.threads.runningIn === ws.threads.thread)
+  return <Thread messages={ws.messages} busy={busy} live={ws.live} compact={compact} onToggleNote={ws.toggleNote} />
 }
 
 /** A chat transcript; shared by the design dock and the Shop. */
@@ -78,6 +80,7 @@ export function Thread({
   const waiting = busy && (!live || (last?.role === 'ai' && !last.text && !last.calls?.length))
   return (
     <div className={`thread${compact ? ' thread--compact' : ''}`}>
+      {live && !messages.length && <p className="thread-empty">A new chat. Your shop, tools, memory, Library and parts carry over; only the conversation starts fresh.</p>}
       {messages.map((m, i) => (
         <ChatMessage key={i} m={m} onToggleNote={onToggleNote && ((changeId) => onToggleNote(i, changeId))} />
       ))}

@@ -160,15 +160,24 @@ export type PartMesh = {
   faces: { type: string; area: number; center: number[]; normal?: number[]; radius?: number }[]
 }
 
+/** One of the chats in the Shop or in a project; they share the shop, memory, Library and parts. */
+export type ThreadInfo = { id: string; title: string; updatedAt: number; messages: number }
+
+/**
+ * Chat events (chat, text, call, notes) go only to sockets showing that thread; indexes are
+ * positions in it. `thread` "" is a new chat that starts with its first message.
+ */
 export type ServerEvent =
-  | { type: 'snapshot'; project: ProjectInfo; parts: PartDoc[]; chat: ChatEntry[]; running: boolean }
-  | { type: 'shop-snapshot'; items: ShopItem[]; tools: ShopTool[]; chat: ChatEntry[]; running: boolean }
+  | { type: 'snapshot'; project: ProjectInfo; parts: PartDoc[]; chat: ChatEntry[]; running: boolean; threads: ThreadInfo[]; thread: string }
+  | { type: 'shop-snapshot'; items: ShopItem[]; tools: ShopTool[]; chat: ChatEntry[]; running: boolean; threads: ThreadInfo[]; thread: string }
+  | { type: 'thread'; thread: string; chat: ChatEntry[] }
+  | { type: 'threads'; threads: ThreadInfo[] }
   | { type: 'chat'; entry: ChatEntry; index: number }
   | { type: 'text'; index: number; delta: string }
   | { type: 'call'; index: number; call: CallState }
   | { type: 'part'; part: PartDoc }
   | { type: 'part_removed'; id: string }
-  | { type: 'running'; running: boolean }
+  | { type: 'running'; running: boolean; thread?: string }
   | { type: 'notes'; index: number; notes: ChangeNote[] }
   | { type: 'shop'; items: ShopItem[]; tools: ShopTool[] }
 
@@ -177,6 +186,8 @@ export type ClientEvent =
   | { type: 'stop' }
   | { type: 'undo'; index: number; changeId: string }
   | { type: 'restore'; part: string; version: number }
+  | { type: 'open'; thread: string }
+  | { type: 'delete-thread'; thread: string }
 
 export const MATERIALS: Record<string, number> = {
   'Aluminum 6061': 2.7,

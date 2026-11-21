@@ -4,6 +4,7 @@ import { gearTrain, VERSIONS } from './data'
 import type { Part } from './data'
 import { Viewer } from './Viewer'
 import type { ViewerTheme } from './Viewer'
+import { ThreadBar } from './threads'
 import { Appearance, ChatThread, Composer, ExportMenu, Icon, IconButton, ImportButton, ModelPicker, Properties, Source, Toast, totalMass } from './ui'
 import { TierMark, TIER_LABEL } from './paper'
 import { plainFirst } from './prose'
@@ -236,6 +237,7 @@ export function OptionB() {
       <div className={`dock${expanded ? ' is-expanded' : ''}`}>
         {expanded ? (
           <div className="dock-thread">
+            {ws.live && <ThreadBar threads={ws.threads} />}
             <ChatThread compact />
           </div>
         ) : (

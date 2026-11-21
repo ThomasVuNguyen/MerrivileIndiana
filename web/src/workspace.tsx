@@ -5,10 +5,12 @@ import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js'
 import occtimportjs from 'occt-import-js'
 import occtWasm from 'occt-import-js/dist/occt-import-js.wasm?url'
 import { useLoader } from '@react-three/fiber'
-import type { Attachment, FaceRef, ModelInfo, ServerEvent } from '../shared/protocol'
+import type { Attachment, FaceRef, ModelInfo, ServerEvent, ThreadInfo } from '../shared/protocol'
 import { api, pendingPrompt, socketUrl } from './api'
 import { BrepLoader } from './brep'
 import { loadAssembly, partFromDoc, TRANSCRIPT } from './data'
+import { lastThread } from './threads'
+import type { Threads } from './threads'
 import type { Appearance, Assembly, Instance, Message, Part, ToolCall } from './data'
 
 type Workspace = ReturnType<typeof useWorkspaceState>
@@ -72,6 +74,9 @@ function useWorkspaceState(projectId: string) {
   const [connected, setConnected] = useState(!live)
   const socket = useRef<WebSocket | null>(null)
   const [busy, setBusy] = useState(false)
+  const [threadList, setThreadList] = useState<ThreadInfo[]>([])
+  const [thread, setThread] = useState('')
+  const [runningIn, setRunningIn] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [fitNonce, setFitNonce] = useState(0)
   // Rotor angle in degrees. Lives in a ref so the viewer can animate it
@@ -94,7 +99,7 @@ function useWorkspaceState(projectId: string) {
     let retry = 0
     let timer: number | undefined
     const connect = () => {
-      const sock = new WebSocket(socketUrl(projectId))
+      const sock = new WebSocket(`${socketUrl(projectId)}?thread=${lastThread.get(projectId)}`)
       socket.current = sock
       sock.onopen = () => {
         retry = 0
@@ -114,11 +119,19 @@ function useWorkspaceState(projectId: string) {
         setLook(Object.fromEntries(parts.map((p) => [p.id, { color: p.color, opacity: 1, visible: true }])))
         setMessages(ev.chat)
         setBusy(ev.running)
+        setThreadList(ev.threads)
+        setThread(ev.thread)
         const newest = [...ev.parts].sort((a, b) => b.updatedAt - a.updatedAt)[0]
         setSelected((s) => s ?? newest?.id ?? null)
         setView('part')
         const prompt = pendingPrompt.take(projectId)
         if (prompt) socket.current?.send(JSON.stringify({ type: 'send', text: prompt.text, images: prompt.images, modelId: localStorage.getItem('merrivile:model') ?? undefined }))
+      } else if (ev.type === 'thread') {
+        setThread(ev.thread)
+        setMessages(ev.chat)
+        lastThread.set(projectId, ev.thread)
+      } else if (ev.type === 'threads') {
+        setThreadList(ev.threads)
       } else if (ev.type === 'chat') {
         setMessages((m) => {
           const next = [...m]
@@ -155,7 +168,10 @@ function useWorkspaceState(projectId: string) {
       } else if (ev.type === 'part_removed') {
         setAsm((a) => ({ ...a, parts: a.parts.filter((p) => p.id !== ev.id) }))
         setSelected((s) => (s === ev.id ? null : s))
-      } else if (ev.type === 'running') setBusy(ev.running)
+      } else if (ev.type === 'running') {
+        setBusy(ev.running)
+        setRunningIn(ev.running ? (ev.thread ?? null) : null)
+      }
     }
     connect()
     return () => {
@@ -245,7 +261,7 @@ function useWorkspaceState(projectId: string) {
     async (file: File) => {
       if (live) {
         // The server keeps the file and makes it a part; progress arrives over the socket.
-        await api.importStep(projectId, file).catch((err: Error) => notify(err.message))
+        await api.importStep(projectId, file, thread).catch((err: Error) => notify(err.message))
         return
       }
       const id = `import-${Date.now()}`
@@ -311,7 +327,7 @@ function useWorkspaceState(projectId: string) {
         ])
       }
     },
-    [setAppearance, live, projectId, notify],
+    [setAppearance, live, projectId, notify, thread],
   )
 
   const exportFile = useCallback(
@@ -342,6 +358,16 @@ function useWorkspaceState(projectId: string) {
   const stop = useCallback(() => socket.current?.send(JSON.stringify({ type: 'stop' })), [])
   const toggleNote = useCallback((index: number, changeId: string) => socket.current?.send(JSON.stringify({ type: 'undo', index, changeId })), [])
   const restore = useCallback((part: string, version: number) => socket.current?.send(JSON.stringify({ type: 'restore', part, version })), [])
+  const threads: Threads = useMemo(
+    () => ({
+      threads: threadList,
+      thread,
+      runningIn,
+      open: (id) => socket.current?.send(JSON.stringify({ type: 'open', thread: id })),
+      remove: (id) => socket.current?.send(JSON.stringify({ type: 'delete-thread', thread: id })),
+    }),
+    [threadList, thread, runningIn],
+  )
 
   // Stand-in for the OpenAI-compatible agent: handles appearance, view,
   // motion and fit commands locally so the concept can be driven from chat.
@@ -415,6 +441,7 @@ function useWorkspaceState(projectId: string) {
 
   return {
     live,
+    threads,
     toggleNote,
     restore,
     projectId,

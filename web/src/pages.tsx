@@ -99,7 +99,7 @@ export function Projects() {
     setError(null)
     try {
       const project = await api.createProject(file.name.replace(/\.(step|stp)$/i, ''))
-      await api.importStep(project.id, file)
+      await api.importStep(project.id, file, '')
       location.hash = `#/p/${project.id}`
     } catch (err) {
       setError((err as Error).message)

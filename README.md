@@ -59,6 +59,11 @@ after that sign-ups are closed unless the `OPEN_SIGNUP` var is `"true"`.
 - **Shop tools work in batches** (`add_shop_items`, `update_shop_items`, `remove_shop_items`,
   `upsert_tools`). Each batch gets one note whose undo covers all of it: the note's changeId holds
   the batch's change ids joined by commas.
+- **Multiple chats** in the Shop and in every project (`worker/threads.ts`). Each chat keeps
+  its own messages, model history, latest attachments, and a record of which shop and memory it
+  has been shown. They all share the shop, memory, Library and parts. A project runs one AI turn
+  at a time, and the other chats show where it's working. The single chat from before moved
+  into the first thread.
 - **Videos** (MP4, MOV, WebM, MKV, AVI, WMV, MPG, …): a poster and a 3×2 sheet of timed frames,
   which is what the AI sees. The browser makes them when it can play the file; otherwise the
   `Video` container (same image, standard-3, ffmpeg: `/video/frames`) does. Formats browsers

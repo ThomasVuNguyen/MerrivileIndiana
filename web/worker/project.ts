@@ -13,6 +13,7 @@ import { SYSTEM, TOOLS } from './prompt'
 import { attachmentBlocks, hydrator, labels, MODEL_STEP } from './files'
 import { runShopTool, SHOP_TOOL_NAMES } from './tools-shop'
 import type { ShopApi } from './tools-shop'
+import { Threads } from './threads'
 
 const DEFAULT_COLOR = '#b9bcc2'
 const DEFAULT_MATERIAL = 'Aluminum 6061'
@@ -66,7 +67,10 @@ type AiEntry = Extract<ChatEntry, { role: 'ai' }>
 /** One project: its parts, its chat, and the agent loop that edits them. */
 export class Project extends DurableObject<Env> {
   private sql: SqlStorage
+  private threads: Threads
   private abort: AbortController | null = null
+  /** The thread the current run, restore or import writes to (one at a time per project). */
+  private thread = ''
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -76,8 +80,8 @@ export class Project extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS parts (id TEXT PRIMARY KEY, doc TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS versions (part TEXT NOT NULL, version INTEGER NOT NULL, source TEXT NOT NULL,
         created_at INTEGER NOT NULL, PRIMARY KEY (part, version));
-      CREATE TABLE IF NOT EXISTS chat (seq INTEGER PRIMARY KEY, entry TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS history (seq INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL);`)
+`)
+    this.threads = new Threads(this.sql, { chat: 'chat', history: 'history' })
     // Version notes arrived after the first projects were made.
     if (!this.sql.exec<{ name: string }>('PRAGMA table_info(versions)').toArray().some((c) => c.name === 'note')) {
       this.sql.exec("ALTER TABLE versions ADD COLUMN note TEXT NOT NULL DEFAULT ''")
@@ -97,25 +101,41 @@ export class Project extends DurableObject<Env> {
     if (req.headers.get('upgrade') !== 'websocket') return new Response('expected websocket', { status: 426 })
     const info = await this.account().project(projectId)
     if (!info) return new Response('no such project', { status: 404 })
+    const asked = new URL(req.url).searchParams.get('thread') ?? ''
+    const thread = asked === 'new' ? '' : this.threads.has(asked) ? asked : this.threads.latest()
     const { 0: client, 1: server } = new WebSocketPair()
     this.ctx.acceptWebSocket(server)
-    server.send(JSON.stringify({ type: 'snapshot', project: info, parts: this.parts(), chat: this.chat(), running: !!this.abort } satisfies ServerEvent))
+    server.serializeAttachment({ thread })
+    server.send(
+      JSON.stringify({
+        type: 'snapshot',
+        project: info,
+        parts: this.parts(),
+        chat: this.threads.entries(thread),
+        running: !!this.abort,
+        threads: this.threads.list(),
+        thread,
+      } satisfies ServerEvent),
+    )
     return new Response(null, { status: 101, webSocket: client })
   }
 
-  async webSocketMessage(_ws: WebSocket, message: string | ArrayBuffer) {
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     let event: ClientEvent
     try {
       event = JSON.parse(typeof message === 'string' ? message : new TextDecoder().decode(message))
     } catch {
       return
     }
+    const thread = threadOf(ws)
     if (event.type === 'stop') this.abort?.abort()
-    else if (event.type === 'undo') await this.toggleNote(event.index, event.changeId)
-    else if (event.type === 'restore' && !this.abort) this.ctx.waitUntil(this.restore(event.part, event.version))
+    else if (event.type === 'undo') await this.toggleNote(thread, event.index, event.changeId)
+    else if (event.type === 'open') this.show(ws, this.threads.has(event.thread) ? event.thread : '')
+    else if (event.type === 'delete-thread') this.deleteThread(event.thread)
+    else if (event.type === 'restore' && !this.abort) this.ctx.waitUntil(this.restore(this.ensure(ws), event.part, event.version))
     else if (event.type === 'send' && (event.text.trim() || event.images?.length) && !this.abort) {
       // Keep the object alive for the whole run, not just this message.
-      this.ctx.waitUntil(this.run(event.text.trim(), event.faces ?? [], event.modelId, (event.images ?? []).slice(0, 10)))
+      this.ctx.waitUntil(this.run(this.ensure(ws), event.text.trim(), event.faces ?? [], event.modelId, (event.images ?? []).slice(0, 10)))
     }
   }
 
@@ -123,11 +143,34 @@ export class Project extends DurableObject<Env> {
     ws.close(code, 'bye')
   }
 
+  /** The socket's thread; a new chat exists from its first message on. */
+  private ensure(ws: WebSocket) {
+    const thread = threadOf(ws)
+    if (thread) return thread
+    const id = this.threads.create().id
+    this.show(ws, id)
+    return id
+  }
+
+  /** Point one socket at a thread ("" for a new chat) and send it that thread's messages. */
+  private show(ws: WebSocket, thread: string) {
+    ws.serializeAttachment({ thread })
+    ws.send(JSON.stringify({ type: 'thread', thread, chat: this.threads.entries(thread) } satisfies ServerEvent))
+  }
+
+  private deleteThread(thread: string) {
+    if (!this.threads.has(thread) || (this.abort && this.thread === thread)) return
+    this.threads.remove(thread)
+    for (const ws of this.ctx.getWebSockets()) if (threadOf(ws) === thread) this.show(ws, '')
+    this.broadcast({ type: 'threads', threads: this.threads.list() })
+  }
+
   // ---------------------------------------------------------------- agent loop
 
-  private async run(text: string, faces: FaceRef[], modelId: string | undefined, images: Attachment[]) {
+  private async run(thread: string, text: string, faces: FaceRef[], modelId: string | undefined, images: Attachment[]) {
     const abort = (this.abort = new AbortController())
-    this.broadcast({ type: 'running', running: true })
+    this.thread = thread
+    this.broadcast({ type: 'running', running: true, thread })
     this.pushChat({ role: 'user', text, ...(faces.length && { faces }), ...(images.length && { images }) })
     const account = this.account()
     const cfg = await account.modelConfig(modelId)
@@ -138,7 +181,7 @@ export class Project extends DurableObject<Env> {
     const trace = new Trace(this.env, {
       name: 'agent-run',
       userId: this.meta('email') || this.meta('owner'),
-      sessionId: projectId,
+      sessionId: `${projectId}-${thread}`,
       input: { text, ...(faces.length && { faces }), ...(images.length && { attachments: images.map((a) => a.name ?? `${a.width}×${a.height}`) }) },
       metadata: { model: cfg?.model, label: cfg?.label, provider: cfg?.provider, vision: cfg?.vision },
       tags: ['merrivile', cfg?.provider ?? 'no-model'],
@@ -152,14 +195,14 @@ export class Project extends DurableObject<Env> {
       for (const a of images.filter((x) => x.kind === 'step')) {
         const state: CallState = { id: `import-${a.key}`, tool: 'import_step', detail: `${a.name} · reading`, state: 'running' }
         entry.calls.push(state)
-        this.broadcast({ type: 'call', index, call: state })
+        this.toThread({ type: 'call', index, call: state })
         const started = Date.now()
         const obj = (a.size ?? 0) <= MODEL_STEP ? await this.env.FILES.get(a.key) : null
         const r = obj
           ? await this.importPart(a.name ?? 'part.step', new Uint8Array(await obj.arrayBuffer()), abort.signal)
           : { ok: false as const, why: (a.size ?? 0) > MODEL_STEP ? 'over the 45 MB import limit; it is stored but not imported' : 'the file is missing' }
         Object.assign(state, r.ok ? { state: 'done', detail: `${a.name} → ${r.part.id} v1 · ${r.part.metrics?.faces} faces` } : { state: 'error', detail: `${a.name} · ${r.why}` }, { ms: Date.now() - started })
-        this.broadcast({ type: 'call', index, call: state })
+        this.toThread({ type: 'call', index, call: state })
         imported.push(r.ok ? `[${a.name} was imported as part ${r.part.id} "${r.part.name}"; its source reads it with import_step(asset("${r.part.assets?.[0]}")).\n${describe(r.part, false)}]` : `[${a.name} could not be imported: ${r.why}.]`)
       }
       const blocks = await attachmentBlocks(this.env, images, cfg.vision)
@@ -186,7 +229,7 @@ export class Project extends DurableObject<Env> {
         trace,
         onText: (delta) => {
           entry.text += delta
-          this.broadcast({ type: 'text', index, delta })
+          this.toThread({ type: 'text', index, delta })
         },
         host: {
           history: () => this.history(),
@@ -208,9 +251,9 @@ export class Project extends DurableObject<Env> {
     } finally {
       for (const c of entry.calls) if (c.state === 'running') c.state = 'error'
       this.saveChat(index, entry)
-      this.broadcast({ type: 'chat', entry, index })
+      this.toThread({ type: 'chat', entry, index })
       this.abort = null
-      this.broadcast({ type: 'running', running: false })
+      this.broadcast({ type: 'running', running: false, thread: this.thread })
       await this.touch()
       await trace.end({
         output: entry.text,
@@ -224,40 +267,39 @@ export class Project extends DurableObject<Env> {
   private async shopTool(call: Extract<Block, { type: 'tool_call' }>, entry: AiEntry, index: number, ctx: Parameters<typeof runShopTool>[2]): Promise<ToolResult> {
     const state: CallState = { id: call.id, tool: call.name, detail: '', state: 'running' }
     entry.calls.push(state)
-    this.broadcast({ type: 'call', index, call: state })
+    this.toThread({ type: 'call', index, call: state })
     const started = Date.now()
     const out = await runShopTool(call.name, call.input, ctx, call.id).catch(
       (err: Error) => ({ result: { id: call.id, isError: true, content: [{ type: 'text' as const, text: `The tool failed: ${err.message}` }] }, detail: 'failed', ok: false }) as Awaited<ReturnType<typeof runShopTool>>,
     )
     Object.assign(state, { state: out.ok ? 'done' : 'error', detail: out.detail, ms: Date.now() - started })
-    this.broadcast({ type: 'call', index, call: state })
+    this.toThread({ type: 'call', index, call: state })
     if (out.notes?.length) {
       entry.notes = [...(entry.notes ?? []), ...out.notes]
-      this.broadcast({ type: 'notes', index, notes: entry.notes })
+      this.toThread({ type: 'notes', index, notes: entry.notes })
     }
     return out.result
   }
 
   /** Undo (or redo) a shop or memory change from its note in the chat. */
-  private async toggleNote(index: number, changeId: string) {
-    const row = this.sql.exec<{ entry: string }>('SELECT entry FROM chat WHERE seq = ?', index).toArray()[0]
-    if (!row) return
-    const entry = JSON.parse(row.entry) as ChatEntry
-    const note = entry.role === 'ai' ? entry.notes?.find((n: ChangeNote) => n.changeId === changeId) : undefined
-    if (!note || entry.role !== 'ai') return
+  private async toggleNote(thread: string, index: number, changeId: string) {
+    const entry = this.threads.entry(thread, index)
+    const note = entry?.role === 'ai' ? entry.notes?.find((n: ChangeNote) => n.changeId === changeId) : undefined
+    if (!note || entry?.role !== 'ai') return
     if (!(await this.account().toggleChange(changeId, !note.undone))) return
     note.undone = !note.undone
-    this.saveChat(index, entry)
-    this.broadcast({ type: 'notes', index, notes: entry.notes! })
+    this.threads.save(thread, index, entry)
+    this.toThread({ type: 'notes', index, notes: entry.notes! }, thread)
   }
 
   /** Rebuild an earlier version's source as the newest version. */
-  private async restore(partId: string, version: number) {
+  private async restore(thread: string, partId: string, version: number) {
     const part = this.part(partId)
     const row = this.sql.exec<{ source: string }>('SELECT source FROM versions WHERE part = ? AND version = ?', partId, version).toArray()[0]
     if (!part || !row) return
     const abort = (this.abort = new AbortController())
-    this.broadcast({ type: 'running', running: true })
+    this.thread = thread
+    this.broadcast({ type: 'running', running: true, thread })
     const entry: AiEntry = { role: 'ai', text: '', calls: [], model: 'Restore' }
     const index = this.pushChat(entry)
     const state: CallState = { id: `restore-${partId}-${version}`, tool: 'restore', detail: `${partId} v${version}`, state: 'running' }
@@ -270,7 +312,7 @@ export class Project extends DurableObject<Env> {
         abort.signal,
         (patch) => {
           Object.assign(state, patch)
-          this.broadcast({ type: 'call', index, call: state })
+          this.toThread({ type: 'call', index, call: state })
         },
         Date.now(),
       )
@@ -280,9 +322,9 @@ export class Project extends DurableObject<Env> {
         this.appendHistory({ role: 'user', content: [{ type: 'text', text: `[The person restored ${partId} to the source of v${version}; it's now v${now.version}.]` }] })
     } finally {
       this.saveChat(index, entry)
-      this.broadcast({ type: 'chat', entry, index })
+      this.toThread({ type: 'chat', entry, index })
       this.abort = null
-      this.broadcast({ type: 'running', running: false })
+      this.broadcast({ type: 'running', running: false, thread: this.thread })
       await this.touch()
     }
   }
@@ -318,13 +360,17 @@ export class Project extends DurableObject<Env> {
     const data = new Uint8Array(await req.arrayBuffer())
     if (!data.length) return Response.json({ error: 'The file is empty.' }, { status: 400 })
     const abort = (this.abort = new AbortController())
-    this.broadcast({ type: 'running', running: true })
+    // Into the chat the person is looking at, or a new one.
+    const asked = req.headers.get('x-thread') ?? ''
+    this.thread = this.threads.has(asked) ? asked : this.threads.create().id
+    if (this.thread !== asked) for (const ws of this.ctx.getWebSockets()) if (!threadOf(ws)) this.show(ws, this.thread)
+    this.broadcast({ type: 'running', running: true, thread: this.thread })
     this.pushChat({ role: 'user', text: `Imported ${filename}` })
     const entry: AiEntry = { role: 'ai', text: '', calls: [], model: 'Import' }
     const index = this.pushChat(entry)
     const state: CallState = { id: `import-${Date.now()}`, tool: 'import_step', detail: `${filename} · reading`, state: 'running' }
     entry.calls.push(state)
-    this.broadcast({ type: 'call', index, call: state })
+    this.toThread({ type: 'call', index, call: state })
     const started = Date.now()
     const trace = new Trace(this.env, {
       name: 'import-step',
@@ -350,9 +396,9 @@ export class Project extends DurableObject<Env> {
       return Response.json({ ok: true, part: r.part })
     } finally {
       this.saveChat(index, entry)
-      this.broadcast({ type: 'chat', entry, index })
+      this.toThread({ type: 'chat', entry, index })
       this.abort = null
-      this.broadcast({ type: 'running', running: false })
+      this.broadcast({ type: 'running', running: false, thread: this.thread })
       await this.touch()
       await trace.end({ output: entry.text, level: entry.error ? 'WARNING' : 'DEFAULT' })
     }
@@ -363,14 +409,15 @@ export class Project extends DurableObject<Env> {
     if (images.length) {
       // Every file sent in this chat lately, newest first, for run_python's working directory.
       const files = [...images, ...this.files().filter((f) => !images.some((a) => a.key === f.key))].slice(0, 20)
-      this.sql.exec("INSERT OR REPLACE INTO meta VALUES ('images', ?), ('files', ?)", JSON.stringify(images), JSON.stringify(files))
+      this.threads.setMeta(this.thread, 'images', JSON.stringify(images))
+      this.threads.setMeta(this.thread, 'files', JSON.stringify(files))
       return images
     }
-    return JSON.parse(this.meta('images') || '[]')
+    return JSON.parse(this.threads.meta(this.thread, 'images') || '[]')
   }
 
   private files(): Attachment[] {
-    return JSON.parse(this.meta('files') || this.meta('images') || '[]')
+    return JSON.parse(this.threads.meta(this.thread, 'files') || this.threads.meta(this.thread, 'images') || '[]')
   }
 
   private meta(key: string) {
@@ -397,11 +444,11 @@ export class Project extends DurableObject<Env> {
         ? `[Parts in this project: ${parts.map((p) => `${p.id} "${p.name}" v${p.version} ${p.status === 'ok' ? 'builds' : 'has a build error'}`).join('; ')}]`
         : '[This project has no parts yet.]',
     )
-    // Memory and shop go in only when they changed, so history stays small.
+    // Memory and shop go in only when they changed since this chat saw them, so history stays small.
     const hash = String(hashOf(context))
-    if (hash !== this.meta('context')) {
+    if (hash !== this.threads.meta(this.thread, 'context')) {
       lines.push(`[Current memory and shop:\n${context}]`)
-      this.sql.exec("INSERT OR REPLACE INTO meta VALUES ('context', ?)", hash)
+      this.threads.setMeta(this.thread, 'context', hash)
     }
     return lines.join('\n')
   }
@@ -412,7 +459,7 @@ export class Project extends DurableObject<Env> {
     const started = Date.now()
     const update = (patch: Partial<CallState>) => {
       Object.assign(state, patch)
-      this.broadcast({ type: 'call', index, call: state })
+      this.toThread({ type: 'call', index, call: state })
     }
     const fail = (text: string, detail: string): ToolResult => {
       update({ state: 'error', detail, ms: Date.now() - started })
@@ -585,27 +632,36 @@ export class Project extends DurableObject<Env> {
     this.broadcast({ type: 'part', part: doc })
   }
 
-  private chat(): ChatEntry[] {
-    return this.sql.exec<{ entry: string }>('SELECT entry FROM chat ORDER BY seq').toArray().map((r) => JSON.parse(r.entry))
-  }
-
   private pushChat(entry: ChatEntry) {
-    const index = this.sql.exec<{ n: number }>('SELECT count(*) AS n FROM chat').one().n
-    this.sql.exec('INSERT INTO chat VALUES (?, ?)', index, JSON.stringify(entry))
-    this.broadcast({ type: 'chat', entry, index })
+    const index = this.threads.push(this.thread, entry)
+    this.toThread({ type: 'chat', entry, index })
+    this.broadcast({ type: 'threads', threads: this.threads.list() })
     return index
   }
 
   private saveChat(index: number, entry: ChatEntry) {
-    this.sql.exec('UPDATE chat SET entry = ? WHERE seq = ?', JSON.stringify(entry), index)
+    this.threads.save(this.thread, index, entry)
   }
 
   private history(): HistoryItem[] {
-    return this.sql.exec<{ item: string }>('SELECT item FROM history ORDER BY seq').toArray().map((r) => JSON.parse(r.item))
+    return this.threads.history(this.thread)
   }
 
   private appendHistory(item: HistoryItem) {
-    this.sql.exec('INSERT INTO history (item) VALUES (?)', JSON.stringify(item))
+    this.threads.append(this.thread, item)
+  }
+
+  /** Chat events go only to the sockets showing that thread. */
+  private toThread(event: ServerEvent, thread = this.thread) {
+    const data = JSON.stringify(event)
+    for (const ws of this.ctx.getWebSockets()) {
+      if (threadOf(ws) !== thread) continue
+      try {
+        ws.send(data)
+      } catch {
+        // Closed sockets are cleaned up by the runtime.
+      }
+    }
   }
 
   private broadcast(event: ServerEvent) {
@@ -665,3 +721,5 @@ function bytes(b64: string) {
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
   return out
 }
+
+const threadOf = (ws: WebSocket) => (ws.deserializeAttachment() as { thread?: string } | null)?.thread ?? ''
