@@ -169,6 +169,7 @@ export class Project extends DurableObject<Env> {
         env: this.env,
         uid: this.meta('owner'),
         attachments: this.attachments(images),
+        files: this.files(),
         projectId,
         projectName,
         vision: cfg.vision,
@@ -360,10 +361,16 @@ export class Project extends DurableObject<Env> {
   // Attachment numbers refer to the newest message that had images.
   private attachments(images: Attachment[]): Attachment[] {
     if (images.length) {
-      this.sql.exec("INSERT OR REPLACE INTO meta VALUES ('images', ?)", JSON.stringify(images))
+      // Every file sent in this chat lately, newest first, for run_python's working directory.
+      const files = [...images, ...this.files().filter((f) => !images.some((a) => a.key === f.key))].slice(0, 20)
+      this.sql.exec("INSERT OR REPLACE INTO meta VALUES ('images', ?), ('files', ?)", JSON.stringify(images), JSON.stringify(files))
       return images
     }
     return JSON.parse(this.meta('images') || '[]')
+  }
+
+  private files(): Attachment[] {
+    return JSON.parse(this.meta('files') || this.meta('images') || '[]')
   }
 
   private meta(key: string) {

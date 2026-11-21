@@ -3,3 +3,12 @@ bd_warehouse==0.4.0
 numpy
 pillow
 pillow-heif
+# Reading spreadsheets and documents, and the AI's Python sandbox.
+pandas
+openpyxl
+xlrd
+odfpy
+numbers-parser
+python-docx
+python-pptx
+matplotlib

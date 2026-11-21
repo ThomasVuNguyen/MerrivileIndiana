@@ -3,7 +3,7 @@
 
 import type { Attachment } from '../shared/protocol'
 import type { Env } from './env'
-import { videoFetch } from './geometry'
+import { fileFetch } from './geometry'
 
 const extOf = (key: string) => key.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() ?? 'bin'
 
@@ -11,7 +11,7 @@ const extOf = (key: string) => key.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() 
 export async function videoFrames(env: Env, key: string): Promise<Partial<Attachment>> {
   const obj = await env.FILES.get(key)
   if (!obj) throw new Error('The video is no longer stored.')
-  const res = await videoFetch(env, '/video/frames', obj, extOf(key))
+  const res = await fileFetch(env, 'video', '/video/frames', obj, extOf(key))
   const out = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; poster?: string; sheet?: string; width?: number; height?: number; duration?: number; needsCopy?: boolean }
   if (!out.ok || !out.poster || !out.sheet) throw new Error(`Couldn't read this video: ${out.error ?? `error ${res.status}`}`)
   const previewKey = `${key}.preview.jpg`
@@ -27,7 +27,7 @@ export async function videoFrames(env: Env, key: string): Promise<Partial<Attach
 export async function videoCopy(env: Env, key: string): Promise<Partial<Attachment>> {
   const obj = await env.FILES.get(key)
   if (!obj) throw new Error('The video is no longer stored.')
-  const res = await videoFetch(env, '/video/copy', obj, extOf(key))
+  const res = await fileFetch(env, 'video', '/video/copy', obj, extOf(key))
   const length = Number(res.headers.get('content-length'))
   if (!res.ok || !res.body || !length) throw new Error(`Couldn't convert this video: ${((await res.json().catch(() => ({}))) as { error?: string }).error ?? `error ${res.status}`}`)
   const { readable, writable } = new FixedLengthStream(length)

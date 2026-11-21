@@ -5,9 +5,9 @@
 import { z } from 'zod'
 import type { Attachment, ChangeNote, LibraryItem, Memory, ShopItem, ShopTool } from '../shared/protocol'
 import type { Env } from './env'
-import { clock, imageKey, MODEL_STEP, readText, sizeLabel } from './files'
+import { clock, imageKey, kind as kindOfFile, kindOf, MODEL_STEP, officeText, readText, sizeLabel, toBase64 } from './files'
 import { geometryFetch } from './geometry'
-import type { ToolResult, ToolSpec } from './llm'
+import type { Block, ToolResult, ToolSpec } from './llm'
 import type { ItemPatch, ToolPatch } from './shop'
 import { itemLine } from './shop'
 
@@ -35,6 +35,8 @@ export type ShopCtx = {
   uid: string
   /** Images on the message being answered, in order (attachment 1, 2, …). */
   attachments: Attachment[]
+  /** Files sent in this chat lately, newest first: run_python's working directory. */
+  files?: Attachment[]
   projectId?: string
   projectName?: string
   /** In a project, a STEP from the Library becomes a part; returns what happened. */
@@ -66,25 +68,42 @@ export const SHOP_TOOLS: ToolSpec[] = [
     schema: { type: 'object', properties: { query: { type: 'string', description: 'Words to match, e.g. "M3 screw", "bearing 8 mm". Empty lists everything.' } }, additionalProperties: false },
   },
   {
-    name: 'add_shop_item',
+    name: 'add_shop_items',
     description:
-      'Add hardware to the shop. Use it when the person shows or tells you about stock (a photo of a kit, a screenshot of an order, an Amazon link). One call per distinct size. Search first so you update instead of duplicating.',
-    schema: { type: 'object', properties: ITEM_PROPS, required: ['name', 'kind', 'category', 'tier'], additionalProperties: false },
-  },
-  {
-    name: 'update_shop_item',
-    description: 'Change an item: quantity used or restocked (qty_delta), bin, tier, price, link. Use when the person says they used some, ran out, moved or reordered something.',
+      'Add hardware to the shop: one entry per distinct size, as many as the person showed you (a photo of a kit, an order screenshot, a whole spreadsheet) in ONE call, up to 200. Search first so you update instead of duplicating. The person gets one note with one undo for the batch.',
     schema: {
       type: 'object',
-      properties: { id: { type: 'string' }, ...ITEM_PROPS, qty_delta: { type: 'number', description: 'Add or subtract from the count, e.g. -12 after a build.' } },
-      required: ['id'],
+      properties: { items: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'object', properties: ITEM_PROPS, required: ['name', 'kind', 'category', 'tier'], additionalProperties: false } } },
+      required: ['items'],
       additionalProperties: false,
     },
   },
   {
-    name: 'remove_shop_item',
-    description: 'Remove an item the person no longer has and will not reorder. For "ran out" use update_shop_item with qty 0 instead.',
-    schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false },
+    name: 'update_shop_items',
+    description: 'Change items: quantity used or restocked (qty_delta), bin, tier, price, link. Use when the person says they used some, ran out, moved or reordered things. Batch every change into one call.',
+    schema: {
+      type: 'object',
+      properties: {
+        updates: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 200,
+          items: {
+            type: 'object',
+            properties: { id: { type: 'string' }, ...ITEM_PROPS, qty_delta: { type: 'number', description: 'Add or subtract from the count, e.g. -12 after a build.' } },
+            required: ['id'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['updates'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'remove_shop_items',
+    description: 'Remove items the person no longer has and will not reorder, all in one call. For "ran out" set qty 0 with update_shop_items instead.',
+    schema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 500 } }, required: ['ids'], additionalProperties: false },
   },
   {
     name: 'set_item_picture',
@@ -104,31 +123,57 @@ export const SHOP_TOOLS: ToolSpec[] = [
     },
   },
   {
-    name: 'upsert_tool',
+    name: 'upsert_tools',
     description:
-      'Add or change a tool, machine or outside service in the shop. Set have=false for tools the person says they do NOT have, so you never plan work that needs them. Pass id to change an existing one.',
+      'Add or change tools, machines or outside services, all in one call. Set have=false for tools the person says they do NOT have, so you never plan work that needs them. Pass id to change an existing one; a tool with the same name is updated.',
     schema: {
       type: 'object',
       properties: {
-        id: { type: 'string' },
-        name: { type: 'string', description: '"Bambu X1C", "Drill press", "SendCutSend".' },
-        kind: { type: 'string', enum: ['machine', 'hand', 'service'] },
-        can: { type: 'string', description: 'The one capability that matters: "256 mm³ · PLA PETG", "13 mm chuck", "M3–M6", "laser-cut sheet · 5 days".' },
-        have: { type: 'boolean' },
+        tools: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 100,
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              name: { type: 'string', description: '"Bambu X1C", "Drill press", "SendCutSend".' },
+              kind: { type: 'string', enum: ['machine', 'hand', 'service'] },
+              can: { type: 'string', description: 'The one capability that matters: "256 mm³ · PLA PETG", "13 mm chuck", "M3–M6", "laser-cut sheet · 5 days".' },
+              have: { type: 'boolean' },
+            },
+            required: ['name'],
+            additionalProperties: false,
+          },
+        },
       },
-      required: ['name'],
+      required: ['tools'],
       additionalProperties: false,
     },
   },
   {
     name: 'remove_tool',
-    description: 'Remove a tool entry entirely (rare; prefer upsert_tool with have=false).',
+    description: 'Remove a tool entry entirely (rare; prefer upsert_tools with have=false).',
     schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false },
   },
   {
     name: 'read_link',
     description: "Read a product page (Amazon or another store): title, price, bullet points and the main image URL. Use it when the person pastes a link. If it can't be read, ask for a screenshot.",
     schema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'], additionalProperties: false },
+  },
+  {
+    name: 'run_python',
+    description:
+      "Run Python 3.12 in a sandbox with no internet, to read, clean or crunch files: spreadsheets (any format), CSVs, logs, experiment data, Word or PowerPoint files, or to compute and plot. Installed: pandas, numpy, openpyxl, xlrd, odfpy, numbers-parser, python-docx, python-pptx, matplotlib, pillow. The working directory holds the files sent in this chat lately (up to 20, newest first) under their own names; add Library files by id with `library`. print() what you need (output is cut at 20 KB). Save charts and result files into out/ (plt.savefig('out/current.png'), df.to_csv('out/clean.csv')): pictures come back for you to see, and each out/ file gets a download link you can give the person as a markdown link. Files live only for this run.",
+    schema: {
+      type: 'object',
+      properties: {
+        code: { type: 'string' },
+        library: { type: 'array', items: { type: 'string' }, description: 'Library ids whose files to put in the working directory.' },
+      },
+      required: ['code'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'search_library',
@@ -138,7 +183,7 @@ export const SHOP_TOOLS: ToolSpec[] = [
   },
   {
     name: 'open_library_item',
-    description: 'Look at one Library file: a photo or PDF you can see, a text or CSV file inlined. In a project, a STEP file is imported as a part.',
+    description: 'Look at one Library file: a photo or PDF you can see, a video as six timed frames, a text, CSV, spreadsheet or document file as text. In a project, a STEP file is imported as a part.',
     schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false },
   },
   {
@@ -193,6 +238,10 @@ const Item = z.object({
   notes: z.string().max(300).optional(),
 })
 const Update = Item.partial().extend({ id: z.string(), qty_delta: Num.optional() })
+const AddItems = z.object({ items: z.array(Item).min(1).max(200) })
+const UpdateItems = z.object({ updates: z.array(Update).min(1).max(200) })
+const RemoveItems = z.object({ ids: z.array(z.string()).min(1).max(500) })
+const Python = z.object({ code: z.string().min(1).max(100_000), library: z.array(z.string()).max(20).optional() })
 const Picture = z.object({
   id: z.string(),
   attachment: z.number().int().min(1).optional(),
@@ -201,11 +250,15 @@ const Picture = z.object({
   render_source: z.string().optional(),
 })
 const Tool = z.object({ id: z.string().optional(), name: z.string().min(1).max(60), kind: z.enum(['machine', 'hand', 'service']).optional(), can: z.string().max(120).optional(), have: z.boolean().optional() })
+const UpsertTools = z.object({ tools: z.array(Tool).min(1).max(100) })
 const Remember = z.object({ text: z.string().min(3).max(400), scope: z.enum(['everywhere', 'project']), told: z.boolean().optional() })
 const Id = z.object({ id: z.string() })
 const Query = z.object({ query: z.string().optional() })
 const Link = z.object({ url: z.string().url() })
 const SaveFile = z.object({ attachment: z.number().int().min(1), note: z.string().max(300).optional() })
+
+/** "M3 × 8 socket head cap screw, 608ZZ bearing, … +12" */
+const names = (items: ShopItem[]) => `${items.slice(0, 3).map((i) => `${i.name} ${i.kind.toLowerCase()}`).join(', ')}${items.length > 3 ? ` +${items.length - 3}` : ''}`
 
 function libraryLine(l: LibraryItem) {
   const when = new Date(l.createdAt).toISOString().slice(0, 10)
@@ -237,28 +290,61 @@ export async function runShopTool(name: string, input: unknown, ctx: ShopCtx, ca
       ].join('\n\n')
       return ok(text, `${q.query ? `"${q.query}" · ` : ''}${items.length} items, ${tools.length} tools`)
     }
-    case 'add_shop_item': {
-      const f = parse(Item)
+    case 'add_shop_items': {
+      const f = parse(AddItems)
       if (bad(f)) return f
-      const { item, changeId } = await ctx.api.addItem(f)
-      return ok(`Added ${itemLine(item)}`, `${item.name} ${item.kind.toLowerCase()}`, [shop(`Added ${item.name} ${item.kind.toLowerCase()}${item.qty !== undefined ? ` · ${item.qty}` : ''}${item.bin ? ` · bin ${item.bin}` : ''}`, changeId)])
+      const added: ShopItem[] = []
+      const ids: string[] = []
+      for (const fields of f.items) {
+        const { item, changeId } = await ctx.api.addItem(fields)
+        added.push(item)
+        ids.push(changeId)
+      }
+      const one = added.length === 1 ? added[0] : null
+      const text = one ? `Added ${one.name} ${one.kind.toLowerCase()}${one.qty !== undefined ? ` · ${one.qty}` : ''}${one.bin ? ` · bin ${one.bin}` : ''}` : `Added ${added.length} items · ${names(added)}`
+      return ok(`Added:\n${added.map(itemLine).join('\n')}`, one ? `${one.name} ${one.kind.toLowerCase()}` : `${added.length} items`, [shop(text, ids.join(','))])
     }
-    case 'update_shop_item': {
-      const f = parse(Update)
+    case 'update_shop_items': {
+      const f = parse(UpdateItems)
       if (bad(f)) return f
-      const { id, qty_delta, ...patch } = f
-      const r = await ctx.api.updateItem(id, { ...patch, qtyDelta: qty_delta })
-      if (!r) return fail(`No item ${id}. Use search_shop to find the id.`, `${id} · not found`)
-      const what = qty_delta !== undefined ? `${qty_delta > 0 ? '+' : ''}${qty_delta} → ${r.item.qty}` : r.item.qty === 0 ? 'out' : Object.keys(patch).join(', ')
-      return ok(`Updated ${itemLine(r.item)}`, `${r.item.name} · ${what}`, [shop(`${r.item.name} ${r.item.kind.toLowerCase()} · ${what}`, r.changeId)])
+      const lines: string[] = []
+      const missing: string[] = []
+      const changed: string[] = []
+      const ids: string[] = []
+      for (const { id, qty_delta, ...patch } of f.updates) {
+        const r = await ctx.api.updateItem(id, { ...patch, qtyDelta: qty_delta })
+        if (!r) {
+          missing.push(id)
+          continue
+        }
+        const what = qty_delta !== undefined ? `${qty_delta > 0 ? '+' : ''}${qty_delta} → ${r.item.qty}` : r.item.qty === 0 ? 'out' : Object.keys(patch).join(', ')
+        lines.push(`Updated ${itemLine(r.item)}`)
+        changed.push(`${r.item.name} ${r.item.kind.toLowerCase()} · ${what}`)
+        ids.push(r.changeId)
+      }
+      const note = changed.length === 1 ? changed[0] : `Updated ${changed.length} items · ${changed.slice(0, 3).join('; ')}${changed.length > 3 ? ` +${changed.length - 3}` : ''}`
+      const text = [...lines, ...(missing.length ? [`No item ${missing.join(', ')}. Use search_shop for ids.`] : [])].join('\n')
+      if (!ids.length) return fail(text, 'not found')
+      return ok(text, changed.length === 1 ? changed[0] : `${changed.length} items`, [shop(note, ids.join(','))])
     }
-    case 'remove_shop_item': {
-      const f = parse(Id)
+    case 'remove_shop_items': {
+      const f = parse(RemoveItems)
       if (bad(f)) return f
-      const before = (await ctx.api.items()).find((i) => i.id === f.id)
-      const changeId = await ctx.api.removeItem(f.id)
-      if (!changeId || !before) return fail(`No item ${f.id}.`, `${f.id} · not found`)
-      return ok(`Removed ${before.name} ${before.kind}.`, `${before.name} removed`, [shop(`Removed ${before.name} ${before.kind.toLowerCase()}`, changeId)])
+      const all = await ctx.api.items()
+      const gone: ShopItem[] = []
+      const ids: string[] = []
+      for (const id of f.ids) {
+        const before = all.find((i) => i.id === id)
+        const changeId = before && (await ctx.api.removeItem(id))
+        if (before && changeId) {
+          gone.push(before)
+          ids.push(changeId)
+        }
+      }
+      const missing = f.ids.filter((id) => !gone.some((g) => g.id === id))
+      if (!gone.length) return fail(`No item ${missing.join(', ')}.`, 'not found')
+      const text = gone.length === 1 ? `Removed ${gone[0].name} ${gone[0].kind.toLowerCase()}` : `Removed ${gone.length} items · ${names(gone)}`
+      return ok(`${text}.${missing.length ? ` Not found: ${missing.join(', ')}.` : ''}`, gone.length === 1 ? `${gone[0].name} removed` : `${gone.length} removed`, [shop(text, ids.join(','))])
     }
     case 'set_item_picture': {
       const f = parse(Picture)
@@ -278,17 +364,28 @@ export async function runShopTool(name: string, input: unknown, ctx: ShopCtx, ca
       const r = await ctx.api.updateItem(item.id, { image: `/api/files/${key}` })
       return ok(`Picture set for ${item.name} ${item.kind}.`, `${item.name} · picture`, r ? [shop(`Picture for ${item.name} ${item.kind.toLowerCase()}`, r.changeId)] : [])
     }
-    case 'upsert_tool': {
-      const f = parse(Tool)
+    case 'upsert_tools': {
+      const f = parse(UpsertTools)
       if (bad(f)) return f
-      const existing = f.id ? null : (await ctx.api.tools()).find((t) => t.name.toLowerCase() === f.name.toLowerCase())
-      const r = await ctx.api.upsertTool(f.id ?? existing?.id, { name: f.name, kind: f.kind, can: f.can, have: f.have })
-      if (!r) return fail(`No tool ${f.id}.`, `${f.id} · not found`)
-      const t = r.tool
-      return ok(`Saved tool [${t.id}] ${t.name} (${t.kind}, ${t.can}) · ${t.have ? 'have' : 'do not have'}`, `${t.name} · ${t.have ? 'have' : "don't have"}`, [
-        shop(`Tools · ${t.name}${t.can ? `, ${t.can}` : ''}${t.have ? '' : ' · not in the shop'}`, r.changeId),
-      ])
+      const all = await ctx.api.tools()
+      const saved: ShopTool[] = []
+      const ids: string[] = []
+      for (const t of f.tools) {
+        const existing = t.id ? null : all.find((x) => x.name.toLowerCase() === t.name.toLowerCase())
+        const r = await ctx.api.upsertTool(t.id ?? existing?.id, { name: t.name, kind: t.kind, can: t.can, have: t.have })
+        if (r) {
+          saved.push(r.tool)
+          ids.push(r.changeId)
+        }
+      }
+      if (!saved.length) return fail('No such tool ids.', 'not found')
+      const t = saved[0]
+      const text =
+        saved.length === 1 ? `Tools · ${t.name}${t.can ? `, ${t.can}` : ''}${t.have ? '' : ' · not in the shop'}` : `Tools · ${saved.length} saved: ${saved.slice(0, 3).map((x) => x.name).join(', ')}${saved.length > 3 ? ` +${saved.length - 3}` : ''}`
+      return ok(saved.map((x) => `Saved tool [${x.id}] ${x.name} (${x.kind}, ${x.can}) · ${x.have ? 'have' : 'do not have'}`).join('\n'), saved.length === 1 ? `${t.name} · ${t.have ? 'have' : "don't have"}` : `${saved.length} tools`, [shop(text, ids.join(','))])
     }
+    case 'run_python':
+      return runPython(input, ctx, callId)
     case 'remove_tool': {
       const f = parse(Id)
       if (bad(f)) return f
@@ -322,7 +419,7 @@ export async function runShopTool(name: string, input: unknown, ctx: ShopCtx, ca
       const item = (await ctx.api.libraryItems()).find((l) => l.id === f.id)
       if (!item) return fail(`No library item ${f.id}. Use search_library.`, `${f.id} · not found`)
       const head = { type: 'text' as const, text: libraryLine(item) }
-      const kind = item.kind ?? 'image'
+      const kind = kindOfFile(item)
       const label = item.note || item.name || item.id
       if (kind === 'image') {
         const key = imageKey(item)
@@ -335,7 +432,8 @@ export async function runShopTool(name: string, input: unknown, ctx: ShopCtx, ca
         const note = { type: 'text' as const, text: `${head.text}\nSix frames across the ${clock(item.duration)} video, each marked with its time:` }
         return { ...ok('', label), result: { id: callId, content: [note, { type: 'image', mediaType: 'image/jpeg', key: item.framesKey }] } }
       }
-      if (kind === 'file') return ok(`${head.text}\n(${sizeLabel(item.size)}; stored for the person, not something you can open.)`, label)
+      if (kind === 'sheet' || kind === 'doc') return ok(`${head.text}\n--- ${item.name} ---\n${await officeText(ctx.env, item.key)}`, label)
+      if (kind === 'file') return ok(`${head.text}\n(${sizeLabel(item.size)}; not a format you can read directly. Try run_python with library: ["${item.id}"].)`, label)
       if (kind === 'pdf') {
         if (!ctx.vision) return ok(`${head.text}\n(This model can't read PDFs.)`, label)
         if ((item.size ?? 0) > 25 * 1024 ** 2) return ok(`${head.text}\n(Too large to read, ${sizeLabel(item.size)}. Ask for the pages that matter.)`, label)
@@ -446,4 +544,53 @@ function b64bytes(b64: string) {
   const out = new Uint8Array(bin.length)
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
   return out
+}
+
+// Up to this much of the person's files go into one Python run (the request is base64 JSON).
+const PYTHON_FILES = 40 * 1024 ** 2
+const SEE = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp'])
+
+/** Runs AI-written Python in the geometry container over the person's files; out/ files come back as downloads. */
+async function runPython(input: unknown, ctx: ShopCtx, callId: string): Promise<ShopToolOutcome> {
+  const f = Python.safeParse(input)
+  if (!f.success) return { result: { id: callId, isError: true, content: [{ type: 'text', text: f.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') }] }, detail: 'invalid input', ok: false }
+  const library = f.data.library?.length ? (await ctx.api.libraryItems()).filter((l) => f.data.library!.includes(l.id)) : []
+  const files: Record<string, string> = {}
+  const skipped: string[] = []
+  let total = 0
+  for (const a of [...library, ...(ctx.files ?? ctx.attachments)]) {
+    let name = (a.name ?? a.key.split('/').pop() ?? 'file').replace(/[/\\]/g, '_')
+    for (let n = 2; name in files; n++) name = name.replace(/(\.[^.]*)?$/, ` (${n})$1`)
+    if (total + (a.size ?? 0) > PYTHON_FILES) {
+      skipped.push(`${name} (${sizeLabel(a.size)})`)
+      continue
+    }
+    const obj = await ctx.env.FILES.get(a.key)
+    if (!obj) continue
+    total += obj.size
+    files[name] = toBase64(new Uint8Array(await obj.arrayBuffer()))
+  }
+  const res = await geometryFetch(ctx.env, '/python', { method: 'POST', body: JSON.stringify({ code: f.data.code, files, timeout: 120 }) })
+  const out = (await res.json().catch(() => ({ ok: false, error: `sandbox error ${res.status}` }))) as { ok: boolean; stdout?: string; stderr?: string; error?: string; files?: Record<string, string> }
+  const links: string[] = []
+  const images: Block[] = []
+  for (const [name, b64] of Object.entries(out.files ?? {})) {
+    const k = kindOf(name, '')
+    const key = `users/${ctx.uid}/uploads/${crypto.randomUUID()}.${k.ext}`
+    const inline = k.kind === 'image' || k.kind === 'video'
+    await ctx.env.FILES.put(key, b64bytes(b64), { httpMetadata: { contentType: k.type, ...(!inline && { contentDisposition: `attachment; filename="${name.replace(/["\\\r\n]/g, '')}"` }) } })
+    links.push(`- out/${name}: /api/files/${key}`)
+    if (SEE.has(k.ext) && images.length < 4) images.push({ type: 'image', mediaType: k.type, key })
+  }
+  const text = [
+    out.ok ? 'Finished.' : `Failed: ${out.error ?? 'see stderr'}`,
+    `Files in the working directory: ${Object.keys(files).join(', ') || 'none'}${skipped.length ? `. Too large for one run (40 MB in all), left out: ${skipped.join(', ')}` : ''}`,
+    out.stdout ? `--- stdout ---\n${out.stdout}` : 'No output printed.',
+    out.stderr ? `--- stderr ---\n${out.stderr}` : '',
+    links.length ? `--- saved (give these links to the person as markdown links) ---\n${links.join('\n')}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+  const detail = `${out.ok ? 'ran' : 'failed'}${links.length ? ` · ${links.length} file${links.length > 1 ? 's' : ''}` : ''}`
+  return { result: { id: callId, isError: !out.ok || undefined, content: [{ type: 'text', text }, ...images] }, detail, ok: out.ok }
 }

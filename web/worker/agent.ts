@@ -8,7 +8,7 @@ import type { ApiCall, Block, HistoryItem, ModelAdapter, ModelConfig, ToolResult
 import { textOf, toolCalls } from './llm'
 import { OpenAICompatAdapter } from './openai'
 
-export const MAX_STEPS = 24
+export const MAX_STEPS = 40
 const STOP_NOTE = 'The person stopped this request before I finished. I will not continue it unless they ask.'
 
 export type AgentHost = {

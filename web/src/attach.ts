@@ -17,6 +17,8 @@ export function kindOf(file: File): FileKind {
   const ext = file.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? ''
   if (file.type.startsWith('image/') || ['heic', 'heif', 'jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image'
   if (file.type.startsWith('video/') || VIDEO_EXT.includes(ext)) return 'video'
+  if (['xlsx', 'xlsm', 'xls', 'ods', 'numbers'].includes(ext)) return 'sheet'
+  if (['docx', 'pptx', 'odt'].includes(ext)) return 'doc'
   if (ext === 'pdf' || file.type === 'application/pdf') return 'pdf'
   if (ext === 'step' || ext === 'stp') return 'step'
   if (['txt', 'csv', 'tsv', 'md', 'json', 'log'].includes(ext)) return 'text'

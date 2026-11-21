@@ -1,6 +1,7 @@
 """Geometry service: POST /build runs a build123d script and returns the part; POST /image/crop
 crops a picture for the shop; POST /image/preview makes a JPEG preview (HEIC too);
-POST /video/frames and /video/copy read a video sent as the raw body.
+POST /video/frames and /video/copy read a video sent as the raw body; POST /convert turns a
+spreadsheet or document (raw body) into text; POST /python runs AI-written Python over files.
 
 The script gets asset(name) for files sent alongside it (an imported STEP).
 
@@ -22,12 +23,12 @@ import sys
 import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from geometry import images, runner, video
+from geometry import images, office, runner, sandbox, video
 
 MAX_BODY = 64 * 1024 * 1024
 MAX_VIDEO = 5 * 1024**3
 # Reported by /health so a deploy can check the container runs the new image.
-VERSION = "2026-11-21.video"
+VERSION = "2026-11-21.office"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -41,8 +42,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path in ("/image/crop", "/image/preview"):
             return self._image(self.path)
-        if self.path in ("/video/frames", "/video/copy"):
-            return self._video(self.path)
+        if self.path in ("/video/frames", "/video/copy", "/convert"):
+            return self._raw(self.path)
+        if self.path == "/python":
+            return self._python()
         if self.path != "/build":
             return self._json(404, {"error": "not found"})
         length = int(self.headers.get("Content-Length") or 0)
@@ -71,7 +74,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": False, "error": str(exc)})
         self._json(200, result)
 
-    def _video(self, path: str) -> None:
+    def _python(self) -> None:
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0 or length > MAX_BODY:
+            return self._json(413, {"error": "body must be 1 byte to 64 MiB"})
+        try:
+            body = json.loads(self.rfile.read(length))
+            files = {str(k): base64.b64decode(v) for k, v in (body.get("files") or {}).items()}
+            timeout = min(max(float(body.get("timeout", 120)), 1.0), 300.0)
+            code = body["code"]
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return self._json(400, {"error": "expected JSON {code, files?, timeout?}"})
+        out = sandbox.run(code, files, timeout)
+        out["files"] = {k: base64.b64encode(v).decode() for k, v in out["files"].items()}
+        self._json(200, out)
+
+    def _raw(self, path: str) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0 or length > MAX_VIDEO:
             return self._json(413, {"error": "body must be 1 byte to 5 GiB"})
@@ -86,6 +104,11 @@ class Handler(BaseHTTPRequestHandler):
                         return self._json(400, {"error": "body ended early"})
                     f.write(chunk)
                     left -= len(chunk)
+            if path == "/convert":
+                try:
+                    return self._json(200, {"ok": True, "text": office.convert(src, ext)})
+                except Exception as exc:  # corrupt, encrypted or not really that format
+                    return self._json(200, {"ok": False, "error": str(exc) or type(exc).__name__})
             if path == "/video/frames":
                 try:
                     out = video.frames(src, ext)

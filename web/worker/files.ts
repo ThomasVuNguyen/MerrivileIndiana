@@ -3,6 +3,7 @@
 
 import type { Attachment, FileKind } from '../shared/protocol'
 import type { Env } from './env'
+import { fileFetch } from './geometry'
 import type { Block, HistoryItem } from './llm'
 
 /** Anything up to 5 GB can be stored; what the AI can open is smaller. */
@@ -30,6 +31,19 @@ const VIDEOS: Record<string, string> = {
   wmv: 'video/x-ms-wmv', flv: 'video/x-flv', '3gp': 'video/3gpp', mpg: 'video/mpeg', mpeg: 'video/mpeg', ts: 'video/mp2t', mts: 'video/mp2t', m2ts: 'video/mp2t', ogv: 'video/ogg',
 }
 export const isVideoName = (name = '') => (name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? '') in VIDEOS
+// Read through the geometry container (pandas, python-docx…) and kept next to the original as text.
+const SHEETS: Record<string, string> = {
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12',
+  xls: 'application/vnd.ms-excel',
+  ods: 'application/vnd.oasis.opendocument.spreadsheet',
+  numbers: 'application/vnd.apple.numbers',
+}
+const DOCS: Record<string, string> = {
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  odt: 'application/vnd.oasis.opendocument.text',
+}
 const IMAGES: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', heic: 'image/heic', heif: 'image/heif' }
 
 /** Kind and content type from the browser's type and the file name. Anything else is a plain file. */
@@ -37,6 +51,8 @@ export function kindOf(name: string, type: string): { kind: FileKind; type: stri
   const ext = name.toLowerCase().match(/\.([a-z0-9]{1,8})$/)?.[1] ?? 'bin'
   if (IMAGES[ext] || type.startsWith('image/')) return { kind: 'image', type: IMAGES[ext] ?? type, ext: IMAGES[ext] ? ext : (type.split('/')[1] ?? 'img').replace(/[^a-z0-9]/g, '') }
   if (VIDEOS[ext] || type.startsWith('video/')) return { kind: 'video', type: VIDEOS[ext] ?? type, ext: VIDEOS[ext] ? ext : (type.split('/')[1] ?? 'video').replace(/[^a-z0-9]/g, '') }
+  if (SHEETS[ext]) return { kind: 'sheet', type: SHEETS[ext], ext }
+  if (DOCS[ext]) return { kind: 'doc', type: DOCS[ext], ext }
   if (ext === 'pdf' || type === 'application/pdf') return { kind: 'pdf', type: TYPES.pdf, ext: 'pdf' }
   if (ext === 'step' || ext === 'stp') return { kind: 'step', type: TYPES.step, ext }
   if (TYPES[ext]) return { kind: 'text', type: `${TYPES[ext]}; charset=utf-8`, ext }
@@ -49,7 +65,8 @@ export function clock(seconds?: number) {
   return t >= 3600 ? `${Math.floor(t / 3600)}:${String(Math.floor(t / 60) % 60).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}` : `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
 }
 
-const kind = (a: Attachment): FileKind => a.kind ?? 'image'
+// Files stored before a kind existed (an .xlsx was a plain "file") are read by their name now.
+export const kind = (a: Attachment): FileKind => (a.kind === 'file' ? kindOf(a.name ?? a.key, '').kind : (a.kind ?? 'image'))
 
 /** The image the AI and the page use: the preview, or the original when it is already web-friendly and small. */
 export function imageKey(a: Attachment) {
@@ -75,6 +92,8 @@ export function labels(attachments: Attachment[]) {
     if (k === 'pdf') return `[Attachment ${n}: PDF "${a.name}", ${sizeLabel(a.size)}${(a.size ?? 0) > MODEL_PDF ? ', too large for you to read; ask for the pages that matter' : ''}]`
     if (k === 'step') return `[Attachment ${n}: STEP "${a.name}", ${sizeLabel(a.size)}]`
     if (k === 'text') return `[Attachment ${n}: text file "${a.name}", shown below]`
+    if (k === 'sheet') return `[Attachment ${n}: spreadsheet "${a.name}", every sheet shown below as CSV; use run_python for anything bigger or messier]`
+    if (k === 'doc') return `[Attachment ${n}: document "${a.name}", its text and tables shown below]`
     return `[Attachment ${n}: file "${a.name}", ${sizeLabel(a.size)}; stored, but not something you can open]`
   })
 }
@@ -97,6 +116,8 @@ export async function attachmentBlocks(env: Env, attachments: Attachment[], visi
       else out.push({ type: 'text', text: `[Attachment ${i + 1} is a PDF this model can't read. Ask for the relevant numbers as text.]` })
     } else if (k === 'text') {
       out.push({ type: 'text', text: `--- Attachment ${i + 1}: ${a.name} ---\n${await readText(env, a.key)}\n--- end of ${a.name} ---` })
+    } else if (k === 'sheet' || k === 'doc') {
+      out.push({ type: 'text', text: `--- Attachment ${i + 1}: ${a.name} ---\n${await officeText(env, a.key)}\n--- end of ${a.name} ---` })
     }
   }
   return out
@@ -110,6 +131,24 @@ export async function readText(env: Env, key: string) {
   const more = obj.size > TEXT_BYTES || text.length > TEXT_CHARS
   if (text.length > TEXT_CHARS) text = text.slice(0, TEXT_CHARS)
   return more ? `${text}\n… [the rest of the file, ${sizeLabel(obj.size)} in all, is not shown]` : text
+}
+
+/**
+ * A spreadsheet or document as text: each sheet as CSV, or the text and tables. Converted once
+ * and stored next to the original; the AI reads the first 200 KB like any text file.
+ */
+export async function officeText(env: Env, key: string): Promise<string> {
+  const textKey = `${key}.text.txt`
+  if (!(await env.FILES.head(textKey))) {
+    const obj = await env.FILES.get(key)
+    if (!obj) return '(the file is missing)'
+    if (obj.size > 60 * 1024 ** 2) return `(too large to convert here, ${sizeLabel(obj.size)}; use run_python on it)`
+    const res = await fileFetch(env, 'geometry', '/convert', obj, key.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() ?? '')
+    const out = (await res.json().catch(() => ({}))) as { ok?: boolean; text?: string; error?: string }
+    if (!out.ok || out.text === undefined) return `(couldn't read this file: ${out.error ?? `error ${res.status}`})`
+    await env.FILES.put(textKey, out.text, { httpMetadata: { contentType: 'text/plain; charset=utf-8' } })
+  }
+  return readText(env, textKey)
 }
 
 /** Loads the data for blocks stored by key, once per run. */

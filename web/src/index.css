@@ -3382,6 +3382,28 @@ body:hover .concept-switch {
   border-color: var(--text);
 }
 
+/* Links and charts in AI replies. */
+.prose-link {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.prose-figure {
+  display: inline-grid;
+  gap: 4px;
+  margin: 4px 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.prose-figure img {
+  display: block;
+  max-width: min(100%, 420px);
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
 /* ---------------------------------------------------------------- library */
 
 /* A video's length on its poster; just ▶ on the small chat thumbs. */

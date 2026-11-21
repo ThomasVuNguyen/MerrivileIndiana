@@ -102,7 +102,7 @@ export type ChangeNote = { kind: 'memory' | 'shop' | 'library'; text: string; ch
 /** `seen`: a video's description was written from its frames. */
 export type LibraryItem = Attachment & { id: string; note: string; description?: string; seen?: boolean; createdAt: number }
 
-export type FileKind = 'image' | 'video' | 'pdf' | 'text' | 'step' | 'file'
+export type FileKind = 'image' | 'video' | 'pdf' | 'text' | 'sheet' | 'doc' | 'step' | 'file'
 
 /**
  * A file attached to a message, already uploaded. Photos keep their original

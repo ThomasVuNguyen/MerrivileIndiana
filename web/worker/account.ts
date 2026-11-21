@@ -272,9 +272,12 @@ export class Account extends DurableObject<Env> {
     return this.shop.removeMemory(id)
   }
 
-  /** Undo a change (or redo it when `undo` is false). */
+  /** Undo a change (or redo it when `undo` is false). A batch's note holds its change ids joined by commas. */
   toggleChange(changeId: string, undo: boolean) {
-    return this.changed(this.shop.undo(changeId, !undo))
+    const ids = changeId.split(',')
+    // Undo newest first so several changes to one item unwind in order.
+    const done = (undo ? ids.reverse() : ids).map((id) => this.shop.undo(id, !undo))
+    return this.changed(done.some(Boolean))
   }
 
   // Any write to the shop goes out to open Shop pages.
@@ -332,7 +335,7 @@ export class Account extends DurableObject<Env> {
       if (!cfg) throw new ModelError('No model is set up yet. Add one under Settings → Models, then send this again.')
       const steps = images.filter((a) => a.kind === 'step').map((a) => `[${a.name} is a STEP model; those go into a project, where they become parts.]`)
       this.appendHistory({ role: 'user', content: [{ type: 'text', text: [this.decorate(text, images), ...steps].join('\n') }, ...(await attachmentBlocks(this.env, images, cfg.vision))] })
-      const ctx = { api: this, env: this.env, uid: this.meta('uid'), attachments: this.attachments(images), vision: cfg.vision }
+      const ctx = { api: this, env: this.env, uid: this.meta('uid'), attachments: this.attachments(images), files: this.files(), vision: cfg.vision }
       const r = await runAgent({
         cfg,
         system: SHOP_SYSTEM,
@@ -416,10 +419,16 @@ export class Account extends DurableObject<Env> {
   // Attachment numbers refer to the newest message that had images, so "try the picture again" works.
   private attachments(images: Attachment[]): Attachment[] {
     if (images.length) {
-      this.sql.exec("INSERT OR REPLACE INTO meta VALUES ('images', ?)", JSON.stringify(images))
+      // Every file sent in this chat lately, newest first, for run_python's working directory.
+      const files = [...images, ...this.files().filter((f) => !images.some((a) => a.key === f.key))].slice(0, 20)
+      this.sql.exec("INSERT OR REPLACE INTO meta VALUES ('images', ?), ('files', ?)", JSON.stringify(images), JSON.stringify(files))
       return images
     }
     return JSON.parse(this.meta('images') || '[]')
+  }
+
+  private files(): Attachment[] {
+    return JSON.parse(this.meta('files') || this.meta('images') || '[]')
   }
 
   private meta(key: string) {

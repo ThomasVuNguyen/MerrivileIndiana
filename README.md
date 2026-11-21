@@ -49,6 +49,16 @@ after that sign-ups are closed unless the `OPEN_SIGNUP` var is `"true"`.
   HEIC in Chrome, by the geometry container (`/image/preview`, pillow-heif). The AI reads previews,
   PDFs up to 25 MB, the first 200 KB of text files, and imports STEP files up to 45 MB.
   Uploads run 4 files at a time, and 3 parts at a time within a big file.
+- **Spreadsheets and documents** (Excel, Numbers, ODS, Word, PowerPoint, ODT): the geometry
+  container (`/convert`) turns them into text, with every sheet as CSV. The text is kept in R2
+  next to the original, and the AI reads it like a text file.
+- **`run_python`**: AI-written Python (pandas, matplotlib, openpyxl, …) runs in the geometry
+  container (`/python`) over the chat's last 20 files and any Library files it names, with no
+  internet, a 120 s limit and 3 GB of memory. Charts and files saved to `out/` come back as
+  downloads, and the AI sees the charts.
+- **Shop tools work in batches** (`add_shop_items`, `update_shop_items`, `remove_shop_items`,
+  `upsert_tools`). Each batch gets one note whose undo covers all of it: the note's changeId holds
+  the batch's change ids joined by commas.
 - **Videos** (MP4, MOV, WebM, MKV, AVI, WMV, MPG, …): a poster and a 3×2 sheet of timed frames,
   which is what the AI sees. The browser makes them when it can play the file; otherwise the
   `Video` container (same image, standard-3, ffmpeg: `/video/frames`) does. Formats browsers
