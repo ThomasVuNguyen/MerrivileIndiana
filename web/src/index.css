@@ -1405,16 +1405,6 @@ body:hover .concept-switch {
   text-overflow: ellipsis;
 }
 
-.thread-new {
-  margin-left: auto;
-  white-space: nowrap;
-}
-
-.thread-new:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
 .thread-list {
   position: absolute;
   top: 100%;
@@ -3718,14 +3708,10 @@ body:hover .concept-switch {
   transition: width 0.2s;
 }
 
-/* ---------------------------------------------------------------- chat prototype (?chat=new) */
-
-.chat-next .msg-who {
-  display: none;
-}
+/* ---------------------------------------------------------------- chat */
 
 /* The person's message: a light block on the right. The AI's answer is plain text. */
-.chat-next .msg--user {
+.msg--user {
   align-self: flex-end;
   max-width: 86%;
   padding: 7px 11px 8px;
@@ -3733,15 +3719,15 @@ body:hover .concept-switch {
   background: var(--bg);
 }
 
-.chat-next .msg--user .msg-text {
+.msg--user .msg-text {
   font-weight: 400;
 }
 
-.chat-next .msg--user .msg-images {
+.msg--user .msg-images {
   justify-content: flex-end;
 }
 
-.chat-next .thread {
+.thread {
   gap: 16px;
 }
 
@@ -3875,29 +3861,9 @@ body:hover .concept-switch {
   color: var(--text);
 }
 
-.chat-next .composer-actions .composer-model {
+.composer-actions .composer-model {
   margin-right: 6px;
   white-space: nowrap;
-}
-
-.listening {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 11px;
-  color: var(--text);
-}
-
-.listening i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #c0392b;
-  animation: pulse 1s infinite ease-in-out;
-}
-
-.mic.is-on {
-  color: #c0392b;
 }
 
 .thread-icons {
@@ -3993,7 +3959,7 @@ body:hover .concept-switch {
 }
 
 /* Suggestions that don't fit a narrow box are left out rather than cut. */
-.chat-next .composer {
+.composer {
   container-type: inline-size;
 }
 

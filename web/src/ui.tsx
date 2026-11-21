@@ -6,7 +6,6 @@ import { clock, FILES_AT_ONCE, filesFrom, pictured, pool, shownUrl, sizeLabel, u
 import { NoteChip } from './paper'
 import { Prose } from './prose'
 import type { Message, Part, ToolCall } from './data'
-import { chatNext } from './flags'
 import { seconds, stepDetail, stepLabel, stepSummary } from './steps'
 import { useWorkspace } from './workspace'
 
@@ -97,7 +96,6 @@ export function Thread({
   useEffect(() => {
     end.current?.scrollIntoView({ block: 'end' })
   }, [messages.length, busy, last?.text.length])
-  const waiting = busy && (!live || (last?.role === 'ai' && !last.text && !last.calls?.length))
   return (
     <div className={`thread${compact ? ' thread--compact' : ''}`}>
       {live && !messages.length && <p className="thread-empty">A new chat. Your shop, tools, memory, Library and parts carry over; only the conversation starts fresh.</p>}
@@ -110,16 +108,7 @@ export function Thread({
           onToggleNote={onToggleNote && ((changeId) => onToggleNote(i, changeId))}
         />
       ))}
-      {chatNext && busy && last?.role === 'user' && <Activity calls={[]} working />}
-      {!chatNext && waiting && (
-        <div className="msg msg--ai">
-          <div className="msg-who">AI</div>
-          <div className="call is-running">
-            <span className="call-dot" />
-            <span className="call-tool">thinking</span>
-          </div>
-        </div>
-      )}
+      {busy && last?.role === 'user' && <Activity calls={[]} working />}
       <div ref={end} />
     </div>
   )
@@ -129,7 +118,6 @@ export function ChatMessage({ m, working, onRetry, onToggleNote }: { m: Message;
   if (m.role === 'user')
     return (
       <div className="msg msg--user">
-        <div className="msg-who">You</div>
         {m.text && <div className="msg-text">{m.text}</div>}
         {m.images && m.images.length > 0 && (
           <div className="msg-images">
@@ -156,36 +144,9 @@ export function ChatMessage({ m, working, onRetry, onToggleNote }: { m: Message;
         ))}
       </div>
     )
-  if (chatNext)
-    return (
-      <div className={`msg msg--ai${m.error ? ' is-error' : ''}`}>
-        <Activity calls={m.calls ?? []} working={working} startedAt={m.startedAt} ms={m.ms} />
-        {m.text && (
-          <div className="msg-text msg-text--prose">
-            <Prose text={m.text} />
-          </div>
-        )}
-        {m.notes?.map((n) => (
-          <NoteChip key={n.changeId} note={n} onToggle={onToggleNote && (() => onToggleNote(n.changeId))} />
-        ))}
-        {!working && m.text && <MessageActions text={m.text} onRetry={onRetry} />}
-      </div>
-    )
   return (
     <div className={`msg msg--ai${m.error ? ' is-error' : ''}`}>
-      <div className="msg-who">{m.model ?? 'AI'}</div>
-      {m.calls && m.calls.length > 0 && (
-        <div className="calls">
-          {m.calls.map((c, i) => (
-            <div key={i} className={`call${c.state === 'running' ? ' is-running' : c.state === 'error' ? ' is-error' : ''}`}>
-              <span className="call-dot" />
-              <span className="call-tool">{c.tool}</span>
-              <span className="call-detail">{c.detail}</span>
-              {c.ms !== undefined && <span className="call-ms">{c.ms < 1000 ? `${c.ms} ms` : `${(c.ms / 1000).toFixed(1)} s`}</span>}
-            </div>
-          ))}
-        </div>
-      )}
+      <Activity calls={m.calls ?? []} working={working} startedAt={m.startedAt} ms={m.ms} />
       {m.text && (
         <div className="msg-text msg-text--prose">
           <Prose text={m.text} />
@@ -194,6 +155,7 @@ export function ChatMessage({ m, working, onRetry, onToggleNote }: { m: Message;
       {m.notes?.map((n) => (
         <NoteChip key={n.changeId} note={n} onToggle={onToggleNote && (() => onToggleNote(n.changeId))} />
       ))}
+      {!working && m.text && <MessageActions text={m.text} onRetry={onRetry} />}
     </div>
   )
 }
@@ -201,7 +163,7 @@ export function ChatMessage({ m, working, onRetry, onToggleNote }: { m: Message;
 /** What the AI did, as one line: "Worked for 12 s · Checked the shop, added 66 items ▾"; live while it works. */
 function Activity({ calls, working, startedAt, ms }: { calls: ToolCall[]; working?: boolean; startedAt?: number; ms?: number }) {
   const [open, setOpen] = useState(false)
-  const [now, setNow] = useState(Date.now())
+  const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     if (!working) return
     const t = window.setInterval(() => setNow(Date.now()), 1000)
@@ -321,7 +283,6 @@ export function ChatInput({
   suggestions?: string[]
 }) {
   const [text, setText] = useState('')
-  const [listening, setListening] = useState<number | null>(null)
   const ownRef = useRef<HTMLTextAreaElement>(null)
   const box = textRef ?? ownRef
   const [images, setImages] = useState<Attachment[]>([])
@@ -430,7 +391,7 @@ export function ChatInput({
       />
       {error && <p className="attach-error">{error}</p>}
       <div className="composer-row">
-        {chatNext && suggestions && !text && !images.length && !listening ? (
+        {suggestions && !text && !images.length ? (
           <span className="suggestions">
             {suggestions.map((s) => (
               <button
@@ -447,11 +408,10 @@ export function ChatInput({
             ))}
           </span>
         ) : (
-          !chatNext && footer
+          <span />
         )}
-        {listening !== null && <Listening since={listening} />}
         <span className="composer-actions">
-          {chatNext && footer}
+          {footer}
           {attachments && (
             <>
               <button type="button" className="attach-btn" onClick={() => picker.current?.click()} aria-label="Attach files" title="Attach files up to 5 GB: photos (HEIC too), PDFs, CSV/text, STEP, anything (or paste and drop them)">
@@ -469,17 +429,6 @@ export function ChatInput({
                 }}
               />
             </>
-          )}
-          {chatNext && (
-            <button
-              type="button"
-              className={`attach-btn mic${listening !== null ? ' is-on' : ''}`}
-              aria-label={listening !== null ? 'Stop listening' : 'Speak'}
-              title="Speak instead of typing (prototype: no transcription yet)"
-              onClick={() => setListening((l) => (l === null ? Date.now() : null))}
-            >
-              <Icon name="mic" size={15} />
-            </button>
           )}
           <button className="send" type="submit" disabled={canStop ? false : !ready} aria-label={canStop ? 'Stop' : 'Send'}>
             <Icon name={busy ? 'stop' : 'send'} size={15} />
@@ -698,17 +647,3 @@ export function ModelPicker() {
   )
 }
 
-/** The mic is on: a pulsing dot and the time so far. */
-function Listening({ since }: { since: number }) {
-  const [now, setNow] = useState(Date.now())
-  useEffect(() => {
-    const t = window.setInterval(() => setNow(Date.now()), 500)
-    return () => window.clearInterval(t)
-  }, [])
-  return (
-    <span className="listening">
-      <i />
-      Listening · {clock((now - since) / 1000)}
-    </span>
-  )
-}

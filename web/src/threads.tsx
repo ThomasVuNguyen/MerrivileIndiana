@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ThreadInfo } from '../shared/protocol'
-import { chatNext } from './flags'
 import { Icon } from './ui'
 
 /** The chat each place (the Shop, a project) last showed, so a reload comes back to it. */
@@ -59,29 +58,16 @@ export function ThreadBar({ threads, side, onSide }: { threads: Threads; side?: 
         {threads.threads.length > 0 && <span className="faint">{threads.threads.length === 1 ? '1 chat' : `${threads.threads.length} chats`} ▾</span>}
       </button>
       {busyElsewhere && <span className="thread-busy">working in “{busyElsewhere.title}”</span>}
-      {chatNext ? (
-        <span className="thread-icons">
-          <button className="thread-icon" disabled={!threads.thread} aria-label="New chat" title="New chat" onClick={() => threads.open('')}>
-            <Icon name="compose" size={14} />
-          </button>
-          {onSide && (
-            <button className={`thread-icon${side ? ' is-on' : ''}`} aria-label={side ? 'Float the chat' : 'Open as a side panel'} title={side ? 'Float the chat' : 'Open as a side panel'} onClick={onSide}>
-              <Icon name="panel" size={14} />
-            </button>
-          )}
-        </span>
-      ) : (
-        <button
-          className="link thread-new"
-          disabled={!threads.thread}
-          onClick={() => {
-            setOpen(false)
-            threads.open('')
-          }}
-        >
-          + New chat
+      <span className="thread-icons">
+        <button className="thread-icon" disabled={!threads.thread} aria-label="New chat" title="New chat" onClick={() => threads.open('')}>
+          <Icon name="compose" size={14} />
         </button>
-      )}
+        {onSide && (
+          <button className={`thread-icon${side ? ' is-on' : ''}`} aria-label={side ? 'Float the chat' : 'Open as a side panel'} title={side ? 'Float the chat' : 'Open as a side panel'} onClick={onSide}>
+            <Icon name="panel" size={14} />
+          </button>
+        )}
+      </span>
       {open && (
         <ul className="thread-list">
           {threads.threads.map((t) => (
@@ -128,7 +114,7 @@ function ago(at: number) {
 export function useSidePanel(): [boolean, () => void] {
   const [side, setSide] = useState(() => {
     try {
-      return chatNext && localStorage.getItem('merrivile:chat-side') === '1'
+      return localStorage.getItem('merrivile:chat-side') === '1'
     } catch {
       return false
     }
