@@ -3925,33 +3925,68 @@ body:hover .concept-switch {
   color: var(--text);
 }
 
-/* The chat as a full-height panel on the right instead of floating over the model. */
+/* The chat as a full-height column on the right (the default on wide screens): one card holding
+   the chat's name, the messages and the message box. The page makes room for it. */
 .dock.is-side {
   left: auto;
   right: 16px;
-  top: 76px;
+  top: 16px;
   bottom: 16px;
   transform: none;
-  width: min(420px, calc(100% - 32px));
+  width: 420px;
+  gap: 0;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  box-shadow: 0 1px 0 rgb(0 0 0 / 0.04);
 }
 
 .dock.is-side .dock-thread {
   flex: 1;
   min-height: 0;
   max-height: none;
+  border: 0;
+}
+
+.dock.is-side .thread-bar {
+  padding: 12px 14px 10px;
 }
 
 .dock.is-side .dock-toggle {
   display: none;
 }
 
-.dock.is-side .dock-bar .composer {
-  padding-left: 14px;
+.dock.is-side .dock-bar {
+  padding: 0 10px 10px;
 }
 
-/* With the chat as a side panel, the part sheet and appearance card move left of it. */
-:has(> .dock.is-side) > .paper-card {
+.dock.is-side .dock-bar .composer {
+  padding-left: 14px;
+  box-shadow: none;
+}
+
+/* Everything that sat on the right moves left of the chat column, and the model centres in
+   what's left. */
+:has(> .dock.is-side) > .paper-card,
+.optB:has(> .dock.is-side) .paper-links {
   right: 452px;
+}
+
+.optB:has(> .dock.is-side) .viewer {
+  width: auto !important;
+  right: 436px !important;
+}
+
+/* A part's sheet sits between the model and the chat, so the model centres left of both. */
+.optB:has(> .dock.is-side):has(> .paper-sheet) .viewer {
+  right: 722px !important;
+}
+
+.optB:has(> .dock.is-side) .stage-empty {
+  left: calc(50% - 218px);
+}
+
+.shop:has(> .dock.is-side) {
+  padding: 0 468px 60px 32px;
 }
 
 .thread-pick .faint {

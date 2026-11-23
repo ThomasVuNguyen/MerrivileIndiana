@@ -63,7 +63,7 @@ export function ThreadBar({ threads, side, onSide }: { threads: Threads; side?: 
           <Icon name="compose" size={14} />
         </button>
         {onSide && (
-          <button className={`thread-icon${side ? ' is-on' : ''}`} aria-label={side ? 'Float the chat' : 'Open as a side panel'} title={side ? 'Float the chat' : 'Open as a side panel'} onClick={onSide}>
+          <button className={`thread-icon${side ? ' is-on' : ''}`} aria-label={side ? 'Float the chat' : 'Dock on the right'} title={side ? 'Float the chat' : 'Dock on the right'} onClick={onSide}>
             <Icon name="panel" size={14} />
           </button>
         )}
@@ -110,23 +110,33 @@ function ago(at: number) {
   return new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
-/** Whether the chat sits as a full-height side panel instead of floating; remembered per browser. */
-export function useSidePanel(): [boolean, () => void] {
-  const [side, setSide] = useState(() => {
+const WIDE = '(min-width: 1000px)'
+
+/** Whether the chat sits as a full-height column on the right, which it does on wide screens unless
+ * the person chose to float it (remembered per browser). Narrow screens always float it. */
+export function useSidePanel(): [boolean, (() => void) | undefined] {
+  const [floating, setFloating] = useState(() => {
     try {
-      return localStorage.getItem('merrivile:chat-side') === '1'
+      return localStorage.getItem('merrivile:chat-float') === '1'
     } catch {
       return false
     }
   })
+  const [wide, setWide] = useState(() => matchMedia(WIDE).matches)
+  useEffect(() => {
+    const q = matchMedia(WIDE)
+    const change = () => setWide(q.matches)
+    q.addEventListener('change', change)
+    return () => q.removeEventListener('change', change)
+  }, [])
   const toggle = () =>
-    setSide((s) => {
+    setFloating((f) => {
       try {
-        localStorage.setItem('merrivile:chat-side', s ? '0' : '1')
+        localStorage.setItem('merrivile:chat-float', f ? '0' : '1')
       } catch {
         // fine
       }
-      return !s
+      return !f
     })
-  return [side, toggle]
+  return [wide && !floating, wide ? toggle : undefined]
 }

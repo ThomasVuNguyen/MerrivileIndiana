@@ -67,7 +67,8 @@ after that sign-ups are closed unless the `OPEN_SIGNUP` var is `"true"`.
 - **Chat UI**: the AI's work shows as one line ("Worked for 12 s · Read motor-plate ▾") that
   opens into readable steps (`src/steps.ts`). Answers come with Copy and Retry, and source chips
   (`library:` / `shop:` / `part:` links in the reply) open what the AI cited. The empty message box
-  offers suggestions, and the chat can float or sit as a full-height side panel.
+  offers suggestions. On screens 1000 px and wider the chat is a full-height column on the right
+  and the page makes room for it; it can be floated instead (remembered per browser).
 - **Videos** (MP4, MOV, WebM, MKV, AVI, WMV, MPG, …): a poster and a 3×2 sheet of timed frames,
   which is what the AI sees. The browser makes them when it can play the file; otherwise the
   `Video` container (same image, standard-3, ffmpeg: `/video/frames`) does. Formats browsers
