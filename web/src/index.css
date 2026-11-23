@@ -904,8 +904,11 @@ body:hover .concept-switch {
 }
 
 .optB .viewer {
-  /* r3f sets height: 100% inline; let top/bottom decide instead. */
+  /* r3f sets width and height: 100% inline; let the edges decide instead. The model sits right of
+     the parts column. */
+  width: auto !important;
   height: auto !important;
+  left: 310px !important;
   bottom: 150px !important;
 }
 
@@ -920,8 +923,35 @@ body:hover .concept-switch {
   background: var(--surface);
 }
 
+/* The left column: the parts, then the open part's sheet (or a picked part's appearance). The
+   right side is the chat's. */
+.paper-side {
+  position: absolute;
+  top: 64px;
+  left: 18px;
+  bottom: 16px;
+  width: 290px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+}
+
+.paper-side .partlist {
+  position: static;
+  flex: none;
+  width: auto;
+  max-height: none;
+  overflow: visible;
+}
+
 .paper-appearance {
-  top: 70px;
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 14px 8px 8px;
+  border-top: 1px solid var(--border-strong);
 }
 
 .paper-project--doc {
@@ -1094,10 +1124,67 @@ body:hover .concept-switch {
 
 /* part view */
 .paper-sheet {
-  top: 64px;
+  display: grid;
   gap: 12px;
-  max-height: calc(100% - 64px - 24px);
-  overflow-y: auto;
+  margin-top: 10px;
+  padding: 14px 8px 8px;
+  border-top: 1px solid var(--border-strong);
+}
+
+.sheet-summary {
+  margin: -6px 0 0;
+  font: 11.5px/1.5 var(--mono);
+  color: var(--muted);
+}
+
+/* Hardware, Made with, Versions, Properties, build123d: one line each until opened. */
+.fold {
+  border-top: 1px solid var(--border);
+}
+
+.fold > summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 0 7px;
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.fold > summary .eyebrow::before {
+  content: '▸ ';
+}
+
+.fold[open] > summary .eyebrow::before {
+  content: '▾ ';
+}
+
+.fold > summary .faint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fold-body {
+  display: grid;
+  gap: 6px;
+  padding-bottom: 10px;
+}
+
+.fold-body .code {
+  max-height: 260px;
+  font-size: 10.5px;
+  border-radius: 0;
+}
+
+.fold + .fold {
+  margin-top: -12px;
 }
 
 .paper-sheet h2 {
@@ -1122,19 +1209,6 @@ body:hover .concept-switch {
 
 .sheet-export .eyebrow {
   margin-right: auto;
-}
-
-.sheet-source summary {
-  cursor: pointer;
-  font-size: 11.5px;
-  color: var(--muted);
-}
-
-.sheet-source .code {
-  margin-top: 8px;
-  max-height: 260px;
-  font-size: 10.5px;
-  border-radius: 0;
 }
 
 /* motion + fit */
@@ -2495,20 +2569,6 @@ body:hover .concept-switch {
 }
 
 /* part sheet additions */
-.sheet-block {
-  display: grid;
-  gap: 6px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-}
-
-.sheet-block-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  font-size: 11px;
-}
-
 .hw-row,
 .ver-row {
   display: grid;
@@ -2618,8 +2678,6 @@ body:hover .concept-switch {
   color: var(--text);
   outline: 0;
 }
-
-
 
 /* ---------------------------------------------------------------- shop (Paper style) */
 
@@ -3392,7 +3450,7 @@ body:hover .concept-switch {
   outline: 0;
 }
 
-.sheet-block .tier {
+.fold .tier {
   font-size: 9.5px;
 }
 
@@ -3972,16 +4030,38 @@ body:hover .concept-switch {
 }
 
 .optB:has(> .dock.is-side) .viewer {
-  width: auto !important;
   right: 436px !important;
+  bottom: 40px !important;
 }
 
-/* A part's sheet sits between the model and the chat, so the model centres left of both. */
-.optB:has(> .dock.is-side):has(> .paper-sheet) .viewer {
-  right: 722px !important;
+.optB .stage-empty {
+  left: calc(50% + 155px);
 }
 
 .optB:has(> .dock.is-side) .stage-empty {
+  left: calc(50% - 63px);
+}
+
+/* With the chat docked, the key hints are one faint line under the model. Floating, the chat
+   covers that spot, so they're left out. */
+.optB:has(> .dock.is-side) .paper-keys {
+  left: 326px;
+  display: flex;
+  gap: 16px;
+}
+
+.optB:not(:has(> .dock.is-side)) .paper-keys {
+  display: none;
+}
+
+/* Floating, the chat sits over the model, not over the parts column. */
+.optB > .dock:not(.is-side) {
+  left: calc(50% + 155px);
+  width: min(600px, calc(100% - 342px));
+}
+
+/* The concept demo's A/B/C switch stays clear of the links beside the chat. */
+body:has(.optB > .dock.is-side) .concept-switch {
   left: calc(50% - 218px);
 }
 

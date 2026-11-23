@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { gearTrain, VERSIONS } from './data'
 import type { Part } from './data'
@@ -224,17 +224,19 @@ export function OptionB() {
         </a>
         <Avatar />
       </nav>
-      <Documents />
-      {solo ? (
-        <PartSheet part={sel} />
-      ) : (
-        sel && (
-          <aside className="paper-card paper-appearance">
-            <div className="eyebrow">Appearance · {sel.name}</div>
-            <Appearance part={sel} />
-          </aside>
-        )
-      )}
+      <aside className="paper-side">
+        <Documents />
+        {solo ? (
+          <PartSheet part={sel} />
+        ) : (
+          sel && (
+            <section className="paper-appearance">
+              <div className="eyebrow">Appearance · {sel.name}</div>
+              <Appearance part={sel} />
+            </section>
+          )
+        )}
+      </aside>
       {ws.view === 'assembly' && <MotionAndFit />}
       <div className={`dock${expanded ? ' is-expanded' : ''}${side ? ' is-side' : ''}`}>
         {expanded ? (
@@ -379,20 +381,15 @@ function PartRow({ part, dim }: { part: Part; dim: boolean }) {
 function PartSheet({ part }: { part: Part }) {
   const ws = useWorkspace()
   const doc = part.live
-  const rows: [string, string][] = [
-    ['Material', part.material],
-    ['Mass', part.mass_g ? `${part.mass_g} g${doc ? '' : ' each'}` : '—'],
-    ['Size', part.bbox.map((v) => +v.toFixed(1)).join(' × ') + ' mm'],
-    ['Volume', part.volume_mm3 ? `${(part.volume_mm3 / 1000).toFixed(2)} cm³` : '—'],
-    ['Faces', String(part.faces)],
-  ]
-  if (doc) rows.push(['Version', doc.version ? `v${doc.version}` : 'not built yet'])
+  const mass = part.mass_g ? `${part.mass_g} g${doc ? '' : ' each'}` : null
+  const size = `${part.bbox.map((v) => +v.toFixed(1)).join(' × ')} mm`
   return (
-    <aside className="paper-card paper-sheet" aria-label="Part">
+    <section className="paper-sheet" aria-label="Part">
       <div className="eyebrow">
         {partNumber(ws, part)} / {part.group.toUpperCase()}
       </div>
       <h2>{part.name}</h2>
+      <p className="sheet-summary">{[part.material, mass, size].filter(Boolean).join(' · ')}</p>
       {doc?.status === 'error' && doc.error && (
         <div className="build-error" role="status">
           <strong>
@@ -402,25 +399,6 @@ function PartSheet({ part }: { part: Part }) {
           <span>{doc.version ? `Showing v${doc.version}, the last good build.` : 'Nothing has built yet.'}</span>
         </div>
       )}
-      <dl className="props">
-        {rows.map(([k, v]) => (
-          <div key={k}>
-            <dt>{k}</dt>
-            <dd>{v}</dd>
-          </div>
-        ))}
-        {!doc && (
-          <div>
-            <dt>Used in</dt>
-            <dd>
-              <button className="link" onClick={() => ws.openAssembly(part.group)}>
-                {part.group}
-              </button>{' '}
-              ×{part.qty}
-            </dd>
-          </div>
-        )}
-      </dl>
       <Appearance part={part} />
       <div className="sheet-export">
         <span className="eyebrow">Export</span>
@@ -432,11 +410,73 @@ function PartSheet({ part }: { part: Part }) {
         </button>
       </div>
       {doc && <PartLists part={part} />}
-      <details className="sheet-source">
-        <summary>build123d · {doc ? `${part.id}.py` : `${part.fn ?? 'imported'}()`}</summary>
+      <Fold name="Properties" part={part.id}>
+        <dl className="props">
+          <div>
+            <dt>Volume</dt>
+            <dd>{part.volume_mm3 ? `${(part.volume_mm3 / 1000).toFixed(2)} cm³` : '—'}</dd>
+          </div>
+          <div>
+            <dt>Faces</dt>
+            <dd>{part.faces}</dd>
+          </div>
+          {doc ? (
+            <div>
+              <dt>Version</dt>
+              <dd>{doc.version ? `v${doc.version}` : 'not built yet'}</dd>
+            </div>
+          ) : (
+            <div>
+              <dt>Used in</dt>
+              <dd>
+                <button className="link" onClick={() => ws.openAssembly(part.group)}>
+                  {part.group}
+                </button>{' '}
+                ×{part.qty}
+              </dd>
+            </div>
+          )}
+        </dl>
+      </Fold>
+      <Fold name="build123d" note={doc ? `${part.id}.py` : `${part.fn ?? 'imported'}()`} part={part.id}>
         <Source part={part} />
-      </details>
-    </aside>
+      </Fold>
+    </section>
+  )
+}
+
+/** Which folds are open, kept while moving between parts. */
+const openFolds = new Set<string>()
+
+/** A section of the part sheet that folds to one line. It opens by itself when what it shows
+ * changes on the same part, such as the AI updating the hardware. */
+function Fold({ name, count, note, part, changes, children }: { name: string; count?: number; note?: string; part: string; changes?: string; children: ReactNode }) {
+  const [open, setOpen] = useState(() => openFolds.has(name))
+  const seen = useRef({ part, changes })
+  useEffect(() => {
+    if (seen.current.part === part && seen.current.changes !== changes) setOpen(true)
+    seen.current = { part, changes }
+  }, [part, changes])
+  return (
+    <details
+      className="fold"
+      open={open}
+      onToggle={(e) => {
+        const now = e.currentTarget.open
+        if (now) openFolds.add(name)
+        else openFolds.delete(name)
+        setOpen(now)
+      }}
+    >
+      <summary>
+        <span className="eyebrow">
+          {name}
+          {count !== undefined && ` · ${count}`}
+        </span>
+        {note && <span className="faint">{note}</span>}
+      </summary>
+      <div className="fold-body">{children}</div>
+    </details>
   )
 }
 
@@ -449,11 +489,7 @@ function PartLists({ part }: { part: Part }) {
   return (
     <>
       {hardware.length > 0 && (
-        <div className="sheet-block">
-          <div className="sheet-block-head">
-            <span className="eyebrow">Hardware</span>
-            {toBuy > 0 && <span className="faint">{toBuy} to buy</span>}
-          </div>
+        <Fold name="Hardware" count={hardware.length} note={toBuy > 0 ? `${toBuy} to buy` : 'all on hand'} part={part.id} changes={JSON.stringify(hardware)}>
           {hardware.map((h, i) => (
             <div key={i} className="hw-row">
               <span className="hw-qty">{h.qty}×</span>
@@ -468,13 +504,10 @@ function PartLists({ part }: { part: Part }) {
               </span>
             </div>
           ))}
-        </div>
+        </Fold>
       )}
       {doc.madeWith && doc.madeWith.length > 0 && (
-        <div className="sheet-block">
-          <div className="sheet-block-head">
-            <span className="eyebrow">Made with</span>
-          </div>
+        <Fold name="Made with" count={doc.madeWith.length} part={part.id} changes={doc.madeWith.join('|')}>
           <div className="caps">
             {doc.madeWith.map((t) => (
               <span key={t} className="cap">
@@ -482,13 +515,10 @@ function PartLists({ part }: { part: Part }) {
               </span>
             ))}
           </div>
-        </div>
+        </Fold>
       )}
       {doc.versions && doc.versions.length > 1 && (
-        <div className="sheet-block">
-          <div className="sheet-block-head">
-            <span className="eyebrow">Versions</span>
-          </div>
+        <Fold name="Versions" count={doc.versions.length} note={`v${doc.version} current`} part={part.id}>
           {doc.versions.map((v) => (
             <div key={v.version} className={`ver-row${v.version === doc.version ? ' is-current' : ''}`}>
               <span className="ver-v">v{v.version}</span>
@@ -505,7 +535,7 @@ function PartLists({ part }: { part: Part }) {
               )}
             </div>
           ))}
-        </div>
+        </Fold>
       )}
     </>
   )

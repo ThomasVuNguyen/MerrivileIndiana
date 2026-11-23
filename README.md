@@ -69,6 +69,10 @@ after that sign-ups are closed unless the `OPEN_SIGNUP` var is `"true"`.
   (`library:` / `shop:` / `part:` links in the reply) open what the AI cited. The empty message box
   offers suggestions. On screens 1000 px and wider the chat is a full-height column on the right
   and the page makes room for it; it can be floated instead (remembered per browser).
+- **Project layout**: parts and the open part's sheet on the left, the model in the middle, the chat
+  on the right. The sheet shows material, mass and size on one line; Hardware, Made with, Versions,
+  Properties and the build123d source fold, stay open across parts, and open by themselves when
+  the AI changes what they list.
 - **Videos** (MP4, MOV, WebM, MKV, AVI, WMV, MPG, …): a poster and a 3×2 sheet of timed frames,
   which is what the AI sees. The browser makes them when it can play the file; otherwise the
   `Video` container (same image, standard-3, ffmpeg: `/video/frames`) does. Formats browsers
