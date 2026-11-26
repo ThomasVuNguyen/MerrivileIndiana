@@ -4109,3 +4109,439 @@ body:has(.optB > .dock.is-side) .concept-switch {
     display: none;
   }
 }
+
+/* ---------------------------------------------------------------- live assemblies */
+
+/* Small counts and states beside a name in the documents and instance lists. */
+.badge {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  font-size: 9.5px;
+  line-height: 14px;
+  letter-spacing: 0.04em;
+}
+
+.badge--warn {
+  color: #b5412f;
+}
+
+.badge--stale {
+  color: #a8701d;
+  text-transform: uppercase;
+}
+
+.doc-row.is-open .badge,
+.partlist-row.is-open .badge {
+  color: rgb(246 244 239 / 0.75);
+}
+
+.stale-note {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-left: 2px solid #c8892a;
+  background: rgb(200 137 42 / 0.09);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.stale-note strong {
+  font-weight: 500;
+  color: #8f5d14;
+}
+
+.mesh-loading {
+  position: relative;
+  padding: 6px 0 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.mesh-loading::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--border);
+}
+
+.mesh-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 1;
+  height: 2px;
+  background: var(--text);
+  transition: width 0.2s;
+}
+
+.asm-showall {
+  justify-self: start;
+  font-size: 11px;
+}
+
+.asm-list {
+  display: grid;
+}
+
+.asm-row .qty {
+  flex: none;
+}
+
+.asm-branch {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  margin: -6px -3px 0 -10px;
+  border-left: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.swatch-dot--group {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--muted);
+}
+
+/* The picked instance opens under its row. */
+.inst-detail {
+  display: grid;
+  gap: 8px;
+  margin: 2px 0 8px 12px;
+  padding: 8px 0 8px 10px;
+  border-left: 2px solid var(--accent);
+  font-size: 11.5px;
+  cursor: default;
+}
+
+.inst-detail .props div {
+  grid-template-columns: 58px 1fr;
+}
+
+.inst-detail .props dd {
+  overflow-wrap: anywhere;
+}
+
+.snap-line {
+  display: grid;
+  gap: 1px;
+  padding: 5px 7px;
+  background: rgb(60 55 40 / 0.05);
+}
+
+.snap-what {
+  overflow-wrap: anywhere;
+}
+
+.snap-res {
+  color: var(--accent);
+}
+
+.snap-res.is-bad {
+  color: #b5412f;
+}
+
+.snap-note {
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.inst-datums {
+  display: grid;
+  gap: 5px;
+}
+
+.inst-datums .cap .faint {
+  font-size: 9.5px;
+}
+
+.swatch-reset {
+  margin-left: 6px;
+  font-size: 11px;
+}
+
+.check-sum {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.check-none {
+  margin: 0;
+}
+
+.check-partial {
+  padding: 5px 8px;
+  border-left: 2px solid #c8892a;
+  background: rgb(200 137 42 / 0.09);
+  color: #8f5d14;
+}
+
+.findings {
+  margin: 0 -6px;
+}
+
+.check-sum,
+.check-partial,
+.check-none {
+  margin: 0;
+  font-size: 11px;
+}
+
+.findings button {
+  display: grid;
+  gap: 2px;
+}
+
+.finding-top {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.clashes .finding-top span:first-child {
+  overflow: visible;
+}
+
+.finding-kind {
+  flex: none;
+  color: #b5412f;
+}
+
+.findings button.is-info .finding-kind,
+.findings button.is-info .vol {
+  color: var(--muted);
+}
+
+.finding-who {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finding-msg {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+/* Labels the viewer pins on datums and keep-outs. */
+.datum-tag,
+.keepout-tag {
+  display: inline-block;
+  transform: translate(6px, -50%);
+  padding: 0 4px;
+  border: 1px solid;
+  background: rgb(246 244 239 / 0.88);
+  font: 10px/15px var(--mono);
+  white-space: nowrap;
+}
+
+.datum-tag.is-hot {
+  background: var(--accent);
+  color: var(--surface) !important;
+}
+
+.keepout-tag {
+  border-color: #c27a1f;
+  color: #8f5d14;
+}
+
+
+/* ---------------------------------------------------------------- components */
+
+.component-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.component-add {
+  min-height: 170px;
+}
+
+.component-card {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.component-card:hover {
+  border-color: var(--text);
+}
+
+.component-meta {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px 9px;
+  font-size: 11.5px;
+}
+
+.component-meta strong {
+  font-weight: 500;
+  font-size: 12.5px;
+}
+
+.component-pending {
+  position: relative;
+  align-content: center;
+  gap: 6px;
+  min-height: 170px;
+  padding: 0 12px;
+  grid-template-rows: none;
+}
+
+.component-pending.is-loading {
+  background: repeating-linear-gradient(135deg, var(--border) 0 1px, transparent 1px 6px);
+}
+
+.component-pending.is-loading .faint {
+  animation: pulse 1.4s infinite ease-in-out;
+}
+
+.component-pending.is-failed {
+  border-color: #c8433a;
+}
+
+.component-pending.is-failed .faint {
+  color: #b2392f;
+}
+
+.component-pending .link {
+  justify-self: start;
+}
+
+/* One component: the model on engineering paper, its sheet on the right. */
+.component-page {
+  position: fixed;
+  inset: 0;
+  background-color: var(--bg);
+  background-image:
+    repeating-linear-gradient(30deg, rgb(60 55 40 / 0.07) 0 1px, transparent 1px 24px),
+    repeating-linear-gradient(150deg, rgb(60 55 40 / 0.07) 0 1px, transparent 1px 24px),
+    repeating-linear-gradient(90deg, rgb(60 55 40 / 0.05) 0 1px, transparent 1px 41.57px);
+}
+
+.component-page > .projects {
+  position: relative;
+  z-index: 2;
+  padding: 0 22px 0 26px;
+  background: transparent;
+  min-height: 0;
+}
+
+.component-stage {
+  position: absolute;
+  top: 64px;
+  left: 0;
+  right: 380px;
+  bottom: 0;
+}
+
+.component-stage .viewer {
+  position: absolute !important;
+  inset: 0;
+}
+
+.component-loading {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 260px;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+
+.component-hint {
+  position: absolute;
+  left: 26px;
+  bottom: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.component-side {
+  position: absolute;
+  top: 64px;
+  right: 22px;
+  bottom: 16px;
+  width: 340px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.component-side .paper-sheet {
+  margin-top: 0;
+}
+
+.component-name {
+  font: 500 17px var(--mono);
+  letter-spacing: -0.02em;
+}
+
+.component-props div {
+  grid-template-columns: 64px 1fr;
+  align-items: center;
+}
+
+.component-link {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.component-list {
+  display: grid;
+  gap: 2px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.component-list > .eyebrow {
+  margin-bottom: 4px;
+}
+
+.datum-row {
+  display: grid;
+  gap: 1px;
+  padding: 4px 6px;
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.datum-row:hover,
+.datum-row.is-hot {
+  background: rgb(31 122 77 / 0.08);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.datum-row.is-unused {
+  opacity: 0.6;
+}
+
+.datum-row .faint {
+  font-size: 10.5px;
+}
+
+.datum-name {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.badge--found {
+  color: var(--accent);
+}

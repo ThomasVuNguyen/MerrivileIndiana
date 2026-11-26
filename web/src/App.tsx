@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ComponentsPage } from './components'
 import { LibraryPage } from './library'
 import { MemoryPage } from './memory'
 import { ShopPage } from './shop'
@@ -60,6 +61,7 @@ function Routes() {
   else if (route === '/settings/memory') page = <MemoryPage />
   else if (route.startsWith('/shop')) page = <ShopPage />
   else if (route.startsWith('/library')) page = <LibraryPage />
+  else if (route.startsWith('/components')) page = <ComponentsPage route={route} />
   else if (projectId)
     page = (
       <WorkspaceProvider key={route} projectId={projectId}>

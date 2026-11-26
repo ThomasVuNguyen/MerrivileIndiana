@@ -39,6 +39,7 @@ const PATHS: Record<string, string> = {
   mic: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5 11a7 7 0 0 0 14 0M12 18v3',
   panel: 'M3 4h18v16H3zM15 4v16',
   compose: 'M12 4H5v15h15v-7M17.5 3.5l3 3L12 15H9v-3z',
+  isolate: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 6.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z',
 }
 
 export function Icon({ name, size = 16 }: { name: keyof typeof PATHS | string; size?: number }) {
@@ -657,3 +658,38 @@ export function ModelPicker() {
   )
 }
 
+/** Which folds are open, kept while moving between parts and assemblies. An assembly's check and
+ * instances start open. */
+const openFolds = new Set<string>(['Check', 'Instances'])
+
+/** A section of a part or assembly sheet that folds to one line. It opens by itself when what it shows
+ * changes on the same document, such as the AI updating the hardware. */
+export function Fold({ name, count, note, part, changes, children }: { name: string; count?: number; note?: string; part: string; changes?: string; children: ReactNode }) {
+  const [open, setOpen] = useState(() => openFolds.has(name))
+  const seen = useRef({ part, changes })
+  useEffect(() => {
+    if (seen.current.part === part && seen.current.changes !== changes) setOpen(true)
+    seen.current = { part, changes }
+  }, [part, changes])
+  return (
+    <details
+      className="fold"
+      open={open}
+      onToggle={(e) => {
+        const now = e.currentTarget.open
+        if (now) openFolds.add(name)
+        else openFolds.delete(name)
+        setOpen(now)
+      }}
+    >
+      <summary>
+        <span className="eyebrow">
+          {name}
+          {count !== undefined && ` · ${count}`}
+        </span>
+        {note && <span className="faint">{note}</span>}
+      </summary>
+      <div className="fold-body">{children}</div>
+    </details>
+  )
+}

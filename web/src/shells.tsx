@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
+import { ago } from './asm'
+import { AssemblyRow, AssemblySheet } from './assembly'
 import { gearTrain, VERSIONS } from './data'
 import type { Part } from './data'
 import { Viewer } from './Viewer'
 import type { ViewerTheme } from './Viewer'
 import { ThreadBar, useSidePanel } from './threads'
-import { Appearance, ChatThread, Composer, ExportMenu, Icon, IconButton, ImportButton, ModelPicker, Properties, Source, Toast, totalMass } from './ui'
+import { Appearance, ChatThread, Composer, ExportMenu, Fold, Icon, IconButton, ImportButton, ModelPicker, Properties, Source, Toast, totalMass } from './ui'
 import { TierMark, TIER_LABEL } from './paper'
 import { plainFirst } from './prose'
 import { Avatar } from './session'
@@ -190,7 +192,8 @@ export function OptionB() {
   const expanded = expandedAsked || side
   const sel = ws.selectedPart
   const solo = ws.view === 'part' && sel
-  const empty = ws.live && ws.connected && ws.parts.length === 0
+  const doc = ws.liveAsm
+  const empty = ws.live && ws.connected && ws.parts.length === 0 && ws.assemblies.length === 0
   return (
     <div className="app optB">
       <Viewer theme={THEME_B} callout={ws.view === 'assembly' ? (p) => <Callout part={p} num={partNumber(ws, p)} /> : undefined} />
@@ -205,9 +208,9 @@ export function OptionB() {
           merrivile
         </a>
         <span className="paper-project">/ {ws.projectName || '…'}</span>
-        {(solo || !ws.live) && (
+        {(solo || doc || !ws.live) && (
           <>
-            <span className="paper-project paper-project--doc">/ {solo ? sel.name : ws.group === 'All' ? 'Main assembly' : ws.group}</span>
+            <span className="paper-project paper-project--doc">/ {solo ? sel.name : doc ? doc.name : ws.group === 'All' ? 'Main assembly' : ws.group}</span>
             <span className="doc-kind">{solo ? 'part' : 'assembly'}</span>
           </>
         )}
@@ -222,12 +225,17 @@ export function OptionB() {
         <a className="link" href="#/library">
           Library
         </a>
+        <a className="link" href="#/components">
+          Components
+        </a>
         <Avatar />
       </nav>
       <aside className="paper-side">
         <Documents />
         {solo ? (
           <PartSheet part={sel} />
+        ) : doc ? (
+          <AssemblySheet key={doc.id} doc={doc} />
         ) : (
           sel && (
             <section className="paper-appearance">
@@ -237,7 +245,7 @@ export function OptionB() {
           )
         )}
       </aside>
-      {ws.view === 'assembly' && <MotionAndFit />}
+      {ws.view === 'assembly' && !ws.live && <MotionAndFit />}
       <div className={`dock${expanded ? ' is-expanded' : ''}${side ? ' is-side' : ''}`}>
         {expanded ? (
           <div className="dock-thread">
@@ -255,7 +263,14 @@ export function OptionB() {
         </div>
       </div>
       <div className="paper-keys">
-        {ws.view === 'assembly' ? (
+        {doc ? (
+          <>
+            <span className={ws.section ? 'on' : ''}>S section</span>
+            <span>H hide</span>
+            <span>↵ open part</span>
+            <span>Esc back out</span>
+          </>
+        ) : ws.view === 'assembly' ? (
           <>
             <span className={ws.exploded ? 'on' : ''}>E explode</span>
             <span className={ws.section ? 'on' : ''}>S section</span>
@@ -309,11 +324,22 @@ function Callout({ part, num }: { part: Part; num: string }) {
 /** Assemblies and parts are separate documents, as in Onshape. */
 function Documents() {
   const ws = useWorkspace()
-  const inView = new Set(ws.visibleInstances.map((i) => i.part))
+  const inView = new Set(ws.liveAsm ? ws.liveAsm.leaves.flatMap((l) => ('part' in l.ref ? [l.ref.part] : [])) : ws.visibleInstances.map((i) => i.part))
   const placed = (g: string) => ws.asm.instances.filter((i) => i.group === g).length
   const asmOpen = (name: string) => ws.view === 'assembly' && ws.group === name
   return (
     <nav className="partlist" aria-label="Documents">
+      {ws.assemblies.length > 0 && (
+        <>
+          <div className="partlist-head">
+            <span className="eyebrow">Assemblies</span>
+            <span>{ws.assemblies.length}</span>
+          </div>
+          {ws.assemblies.map((a) => (
+            <AssemblyRow key={a.id} doc={a} />
+          ))}
+        </>
+      )}
       {ws.asm.instances.length > 0 && (
         <>
           <div className="partlist-head">
@@ -331,7 +357,7 @@ function Documents() {
           ))}
         </>
       )}
-      <div className={`partlist-head${ws.asm.instances.length ? ' partlist-head--parts' : ''}`}>
+      <div className={`partlist-head${ws.asm.instances.length || ws.assemblies.length ? ' partlist-head--parts' : ''}`}>
         <span className="eyebrow">Parts</span>
         <span>{ws.parts.length}</span>
       </div>
@@ -348,7 +374,7 @@ function PartRow({ part, dim }: { part: Part; dim: boolean }) {
   const look = ws.look[part.id]
   const hidden = look?.visible === false
   const open = ws.view === 'part' && ws.selected === part.id
-  const picked = ws.view === 'assembly' && ws.selected === part.id
+  const picked = ws.view === 'assembly' && !ws.live && ws.selected === part.id
   return (
     <div
       className={`partlist-row${open ? ' is-open' : ''}${picked ? ' is-on' : ''}${ws.hovered === part.id ? ' is-hover' : ''}${hidden ? ' is-hidden' : ''}${dim ? ' is-dim' : ''}`}
@@ -361,8 +387,13 @@ function PartRow({ part, dim }: { part: Part; dim: boolean }) {
       <span className="swatch-dot" style={{ background: look?.color, opacity: look?.opacity }} />
       <span className="name">{part.name}</span>
       {part.qty > 1 && <span className="qty">×{part.qty}</span>}
+      {part.live?.stale?.length ? (
+        <span className="badge badge--stale" title={`Uses ${part.live.stale.map((s) => s.part).join(', ')}, which changed since it was built`}>
+          stale
+        </span>
+      ) : null}
       {part.live && <span className={`qty${part.live.status === 'error' ? ' is-bad' : ''}`}>{part.live.status === 'error' ? 'error' : `v${part.live.version}`}</span>}
-      {ws.view === 'assembly' && !dim && (
+      {ws.view === 'assembly' && !ws.live && !dim && (
         <button
           className="eye"
           aria-label={hidden ? `Show ${part.name}` : `Hide ${part.name}`}
@@ -399,6 +430,7 @@ function PartSheet({ part }: { part: Part }) {
           <span>{doc.version ? `Showing v${doc.version}, the last good build.` : 'Nothing has built yet.'}</span>
         </div>
       )}
+      {doc?.stale?.length ? <StaleNote stale={doc.stale} /> : null}
       <Appearance part={part} />
       <div className="sheet-export">
         <span className="eyebrow">Export</span>
@@ -445,38 +477,26 @@ function PartSheet({ part }: { part: Part }) {
   )
 }
 
-/** Which folds are open, kept while moving between parts. */
-const openFolds = new Set<string>()
-
-/** A section of the part sheet that folds to one line. It opens by itself when what it shows
- * changes on the same part, such as the AI updating the hardware. */
-function Fold({ name, count, note, part, changes, children }: { name: string; count?: number; note?: string; part: string; changes?: string; children: ReactNode }) {
-  const [open, setOpen] = useState(() => openFolds.has(name))
-  const seen = useRef({ part, changes })
-  useEffect(() => {
-    if (seen.current.part === part && seen.current.changes !== changes) setOpen(true)
-    seen.current = { part, changes }
-  }, [part, changes])
+/** The parts it uses changed after it was built; it shows the old fit until it's rebuilt. */
+function StaleNote({ stale }: { stale: { part: string; version: number }[] }) {
+  const ws = useWorkspace()
   return (
-    <details
-      className="fold"
-      open={open}
-      onToggle={(e) => {
-        const now = e.currentTarget.open
-        if (now) openFolds.add(name)
-        else openFolds.delete(name)
-        setOpen(now)
-      }}
-    >
-      <summary>
-        <span className="eyebrow">
-          {name}
-          {count !== undefined && ` · ${count}`}
-        </span>
-        {note && <span className="faint">{note}</span>}
-      </summary>
-      <div className="fold-body">{children}</div>
-    </details>
+    <div className="stale-note" role="status">
+      <strong>Out of date</strong>
+      <span>
+        Uses{' '}
+        {stale.map((s, i) => (
+          <span key={s.part}>
+            {i > 0 && (i === stale.length - 1 ? ' and ' : ', ')}
+            <button className="link" onClick={() => ws.openPart(s.part)}>
+              {ws.parts.find((p) => p.id === s.part)?.name ?? s.part}
+            </button>{' '}
+            (now v{s.version})
+          </span>
+        ))}
+        , which changed; ask the AI to rebuild.
+      </span>
+    </div>
   )
 }
 
@@ -539,14 +559,6 @@ function PartLists({ part }: { part: Part }) {
       )}
     </>
   )
-}
-
-function ago(t: number) {
-  const s = (Date.now() - t) / 1000
-  if (s < 60) return 'just now'
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`
-  if (s < 86400) return `${Math.floor(s / 3600)} h ago`
-  return new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
 function instanceLabel(ws: ReturnType<typeof useWorkspace>, id: string) {

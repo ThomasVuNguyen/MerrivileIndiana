@@ -5,7 +5,7 @@ import { Avatar } from './session'
 
 export const TIER_LABEL: Record<Tier, string> = { 'on-hand': 'on hand', prime: 'prime', order: 'order' }
 
-export function TopBar({ active }: { active: 'projects' | 'shop' | 'library' | 'settings' }) {
+export function TopBar({ active }: { active: 'projects' | 'shop' | 'library' | 'components' | 'settings' }) {
   return (
     <header className="projects-top">
       <a className="wordmark" href="#/projects">
@@ -20,6 +20,9 @@ export function TopBar({ active }: { active: 'projects' | 'shop' | 'library' | '
         </a>
         <a href="#/library" className={active === 'library' ? 'is-on' : ''}>
           Library
+        </a>
+        <a href="#/components" className={active === 'components' ? 'is-on' : ''}>
+          Components
         </a>
         <Avatar />
       </nav>

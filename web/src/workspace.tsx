@@ -5,7 +5,7 @@ import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js'
 import occtimportjs from 'occt-import-js'
 import occtWasm from 'occt-import-js/dist/occt-import-js.wasm?url'
 import { useLoader } from '@react-three/fiber'
-import type { Attachment, FaceRef, ModelInfo, ServerEvent, ThreadInfo } from '../shared/protocol'
+import type { AssemblyDoc, Attachment, ComponentDoc, FaceRef, ModelInfo, ServerEvent, ThreadInfo } from '../shared/protocol'
 import { api, pendingPrompt, socketUrl } from './api'
 import { BrepLoader } from './brep'
 import { loadAssembly, partFromDoc, TRANSCRIPT } from './data'
@@ -53,6 +53,19 @@ const EMPTY: Assembly = {
   checks: { pose_deg: 0, interferences: [] },
 }
 
+/** How one instance of an assembly looks in this browser: its own colour, or hidden. */
+export type InstanceLook = { color?: string; hidden?: boolean }
+
+const lookKey = (projectId: string) => `merrivile:looks:${projectId}`
+
+function savedLooks(projectId: string): Record<string, InstanceLook> {
+  try {
+    return JSON.parse(localStorage.getItem(lookKey(projectId)) ?? '{}')
+  } catch {
+    return {}
+  }
+}
+
 function useWorkspaceState(projectId: string) {
   const live = projectId !== DEMO
   const [projectName, setProjectName] = useState(live ? '' : 'QDD Actuator 110')
@@ -79,6 +92,30 @@ function useWorkspaceState(projectId: string) {
   const [runningIn, setRunningIn] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [fitNonce, setFitNonce] = useState(0)
+  // Live assemblies: the open one, the instance picked in it (a leaf path like "sub/child", or an
+  // instance id), the check finding being looked at, and what's isolated.
+  const [assemblies, setAssemblies] = useState<AssemblyDoc[]>([])
+  const [openAsm, setOpenAsm] = useState<string | null>(null)
+  const [pick, setPick] = useState<string | null>(null)
+  const [finding, setFinding] = useState<number | null>(null)
+  const [isolated, setIsolated] = useState<string | null>(null)
+  const [looks, setLooks] = useState<Record<string, InstanceLook>>(() => (live ? savedLooks(projectId) : {}))
+  const [components, setComponents] = useState<ComponentDoc[] | null>(null)
+  // The socket handler is set up once, so it reads these instead of state.
+  const asmsRef = useRef<AssemblyDoc[]>([])
+  const openRef = useRef<string | null>(null)
+  const partsRef = useRef<Part[]>([])
+
+  const showAssembly = useCallback((id: string) => {
+    if (openRef.current !== id) {
+      setPick(null)
+      setIsolated(null)
+    }
+    openRef.current = id
+    setOpenAsm(id)
+    setFinding(null)
+    setView('assembly')
+  }, [])
   // Rotor angle in degrees. Lives in a ref so the viewer can animate it
   // every frame without re-rendering the page.
   const drive = useRef(0)
@@ -115,12 +152,15 @@ function useWorkspaceState(projectId: string) {
       if (ev.type === 'snapshot') {
         setProjectName(ev.project.name)
         const parts = ev.parts.map(partFromDoc)
+        partsRef.current = parts
         setAsm({ ...EMPTY, name: ev.project.name, parts })
         setLook(Object.fromEntries(parts.map((p) => [p.id, { color: p.color, opacity: 1, visible: true }])))
         setMessages(ev.chat)
         setBusy(ev.running)
         setThreadList(ev.threads)
         setThread(ev.thread)
+        asmsRef.current = ev.assemblies ?? []
+        setAssemblies(asmsRef.current)
         const newest = [...ev.parts].sort((a, b) => b.updatedAt - a.updatedAt)[0]
         setSelected((s) => s ?? newest?.id ?? null)
         setView('part')
@@ -152,20 +192,38 @@ function useWorkspaceState(projectId: string) {
       } else if (ev.type === 'part') {
         const part = partFromDoc(ev.part)
         if (ev.part.files) useLoader.preload(BrepLoader, ev.part.files.mesh)
-        setAsm((a) => {
-          const prev = a.parts.find((p) => p.id === part.id)
-          return { ...a, parts: prev ? a.parts.map((p) => (p.id === part.id ? part : p)) : [...a.parts, part] }
-        })
+        const prev = partsRef.current.find((p) => p.id === part.id)?.live
+        // Only marked out of date (a part it uses changed): show the badge, stay where you are.
+        const marked = !!prev && prev.version === ev.part.version && !!ev.part.stale?.length && JSON.stringify(prev.stale) !== JSON.stringify(ev.part.stale)
+        partsRef.current = prev ? partsRef.current.map((p) => (p.id === part.id ? part : p)) : [...partsRef.current, part]
+        setAsm((a) => ({ ...a, parts: partsRef.current }))
         setLook((l) => ({ ...l, [part.id]: l[part.id] && l[part.id].color === part.color ? l[part.id] : { color: part.color, opacity: l[part.id]?.opacity ?? 1, visible: true } }))
         // Follow the AI to the part it just built.
-        if (ev.part.status === 'ok') {
+        if (ev.part.status === 'ok' && !marked) {
           setSelected(part.id)
           setView('part')
           setFaces((f) => f.filter((x) => x.part !== part.id))
         }
+      } else if (ev.type === 'assembly') {
+        const doc = ev.assembly
+        const all = asmsRef.current
+        const prev = all.find((a) => a.id === doc.id)
+        asmsRef.current = prev ? all.map((a) => (a.id === doc.id ? doc : a)) : [...all, doc]
+        setAssemblies(asmsRef.current)
+        // A new save (not just marking it out of date): follow the AI there, as with parts.
+        if (!prev || prev.version !== doc.version) showAssembly(doc.id)
+      } else if (ev.type === 'assembly_removed') {
+        asmsRef.current = asmsRef.current.filter((a) => a.id !== ev.id)
+        setAssemblies(asmsRef.current)
+        if (openRef.current === ev.id) {
+          openRef.current = null
+          setOpenAsm(null)
+          setView('part')
+        }
       } else if (ev.type === 'notes') {
         setMessages((m) => m.map((x, i) => (i === ev.index && x.role === 'ai' ? { ...x, notes: ev.notes } : x)))
       } else if (ev.type === 'part_removed') {
+        partsRef.current = partsRef.current.filter((p) => p.id !== ev.id)
         setAsm((a) => ({ ...a, parts: a.parts.filter((p) => p.id !== ev.id) }))
         setSelected((s) => (s === ev.id ? null : s))
       } else if (ev.type === 'running') {
@@ -179,7 +237,7 @@ function useWorkspaceState(projectId: string) {
       window.clearTimeout(timer)
       socket.current?.close()
     }
-  }, [live, projectId])
+  }, [live, projectId, showAssembly])
 
   // A part source chip in the chat selects that part.
   useEffect(() => {
@@ -249,6 +307,34 @@ function useWorkspaceState(projectId: string) {
   const activeClash = clash !== null ? asm.checks.interferences[clash] ?? null : null
 
   const fit = useCallback(() => setFitNonce((n) => n + 1), [])
+
+  const liveAsm = live && view === 'assembly' ? assemblies.find((a) => a.id === openAsm) ?? null : null
+
+  // Instance colours and hiding are this browser's, kept per project.
+  const setInstanceLook = useCallback(
+    (key: string, patch: InstanceLook) => {
+      setLooks((l) => {
+        const next = { ...l, [key]: { ...l[key], ...patch } }
+        try {
+          localStorage.setItem(lookKey(projectId), JSON.stringify(next))
+        } catch {
+          // Private windows: it just doesn't persist.
+        }
+        return next
+      })
+    },
+    [projectId],
+  )
+
+  // Components carry the datums and keep-outs drawn on their instances; loaded once an assembly
+  // shows, and again when one uses a component this list hasn't seen.
+  const usesComponent = liveAsm?.leaves.find((l) => 'component' in l.ref && !components?.some((c) => c.id === (l.ref as { component: string }).component))
+  useEffect(() => {
+    if (!usesComponent) return
+    fetch('/api/components')
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setComponents, () => {})
+  }, [usesComponent])
 
   const openPart = useCallback(
     (id?: string) => {
@@ -503,6 +589,19 @@ function useWorkspaceState(projectId: string) {
     toast,
     fit,
     fitNonce,
+    assemblies,
+    openAsm,
+    liveAsm,
+    openLiveAssembly: showAssembly,
+    pick,
+    setPick,
+    finding,
+    setFinding,
+    isolated,
+    setIsolated,
+    looks,
+    setInstanceLook,
+    components,
   }
 }
 

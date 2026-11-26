@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from 'react'
 import { BufferAttribute, BufferGeometry, Loader } from 'three'
 import type { PartMesh } from '../shared/protocol'
 
@@ -11,17 +12,66 @@ export type BrepData = {
 
 export const brepOf = (g: BufferGeometry) => g.userData.brep as BrepData | undefined
 
-/** Loads the face-indexed tessellation served for a part version. */
+/** Bytes in and expected per mesh URL while it downloads; gone once it's loaded. */
+const loading = new Map<string, { loaded: number; total: number }>()
+const listeners = new Set<() => void>()
+let tick = 0
+const changed = () => {
+  tick++
+  listeners.forEach((l) => l())
+}
+const subscribe = (l: () => void) => {
+  listeners.add(l)
+  return () => void listeners.delete(l)
+}
+
+/** Download progress of the meshes still loading, for a progress line. Re-renders as bytes arrive. */
+export function useMeshProgress(urls: string[]) {
+  useSyncExternalStore(subscribe, () => tick)
+  const shown = urls.flatMap((u) => {
+    const p = loading.get(u)
+    return p ? [{ url: u, ...p }] : []
+  })
+  return shown
+}
+
+/** Loads the face-indexed tessellation served for a part version (or a component, or a clash). */
 export class BrepLoader extends Loader<BufferGeometry> {
   load(url: string, onLoad: (g: BufferGeometry) => void, _?: unknown, onError?: (err: unknown) => void) {
-    fetch(url)
-      .then((r) => {
-        if (!r.ok) throw new Error(`${r.status} loading ${url}`)
-        return r.json() as Promise<PartMesh>
-      })
+    read(url)
       .then((mesh) => onLoad(decode(mesh)))
       .catch((err) => onError?.(err))
+      .finally(() => {
+        loading.delete(url)
+        changed()
+      })
   }
+}
+
+// Component meshes run to megabytes, so the body is read in chunks to report progress. A
+// compressed response's length isn't the body's, so its total stays unknown (0).
+async function read(url: string): Promise<PartMesh> {
+  const r = await fetch(url)
+  if (!r.ok) throw new Error(`${r.status} loading ${url}`)
+  const length = Number(r.headers.get('content-length')) || 0
+  if (!r.body || (length && length < 1_000_000)) return r.json()
+  const total = r.headers.get('content-encoding') ? 0 : length
+  const reader = r.body.getReader()
+  const chunks: Uint8Array[] = []
+  let loaded = 0
+  let shown = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    loaded += value.length
+    if (loaded > 500_000 && loaded - shown > 200_000) {
+      shown = loaded
+      loading.set(url, { loaded, total })
+      changed()
+    }
+  }
+  return JSON.parse(await new Blob(chunks as BlobPart[]).text())
 }
 
 function decode(mesh: PartMesh): BufferGeometry {

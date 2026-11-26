@@ -1,12 +1,13 @@
-import { createContext, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber'
 import { Bounds, GizmoHelper, GizmoViewcube, GizmoViewport, Html, OrbitControls, useBounds } from '@react-three/drei'
-import { Box3, Color, DoubleSide, EdgesGeometry, Group, Plane, Vector3 } from 'three'
+import { Box3, DoubleSide, Group, Vector3 } from 'three'
 import type { BufferGeometry, MeshStandardMaterial } from 'three'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
-import { mergeVertices, toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import { LiveAssembly } from './assembly3d'
 import { BrepLoader, brepOf, faceGeometry } from './brep'
+import { CLASH, prepare, RefitContext, SECTION, WHITE } from './viewer-shared'
 import { EXPLODE, gearTrain } from './data'
 import type { Instance, Part } from './data'
 import { useWorkspace } from './workspace'
@@ -19,12 +20,6 @@ export type ViewerTheme = {
   ambient: number
 }
 
-const SECTION = new Plane(new Vector3(-1, 0, 0), 0)
-const WHITE = new Color('#ffffff')
-
-// Parts load independently; each one asks the assembly to refit when it lands.
-// A key makes the request once per framing, so a rebuilt part keeps the camera.
-const RefitContext = createContext<(delay?: number, key?: string) => void>(() => {})
 
 export function Viewer({ theme, callout }: { theme: ViewerTheme; callout?: (part: Part) => ReactNode }) {
   const ws = useWorkspace()
@@ -36,7 +31,9 @@ export function Viewer({ theme, callout }: { theme: ViewerTheme; callout?: (part
       dpr={[1, 2]}
       onPointerMissed={() => {
         if (ws.view === 'part') ws.setFaces([])
-        else if (ws.clash === null) ws.setSelected(null)
+        else if (ws.liveAsm) {
+          if (ws.finding === null) ws.setPick(null)
+        } else if (ws.clash === null) ws.setSelected(null)
       }}
       onCreated={(s) => {
         s.gl.localClippingEnabled = true
@@ -74,7 +71,7 @@ function Assembly({ theme, callout }: { theme: ViewerTheme; callout?: (part: Par
   const soloPart = ws.view === 'part' ? ws.selected : null
   // What is being framed; a part asks once per framing, not once per rebuild.
   const framing = useRef('')
-  framing.current = `${ws.fitNonce}|${ws.group}|${ws.view}|${soloPart}`
+  framing.current = `${ws.fitNonce}|${ws.group}|${ws.view}|${soloPart}|${ws.openAsm}|${ws.isolated}`
   const framed = useRef(new Set<string>())
   const refit = useCallback(
     (delay = 120, key?: string) => {
@@ -91,7 +88,7 @@ function Assembly({ theme, callout }: { theme: ViewerTheme; callout?: (part: Par
     [bounds],
   )
 
-  useEffect(() => refit(), [ws.fitNonce, ws.group, ws.view, soloPart, refit])
+  useEffect(() => refit(), [ws.fitNonce, ws.group, ws.view, soloPart, ws.openAsm, ws.isolated, refit])
   // Wait out the explode animation before measuring.
   useEffect(() => refit(700), [ws.exploded, refit])
 
@@ -144,6 +141,7 @@ function Assembly({ theme, callout }: { theme: ViewerTheme; callout?: (part: Par
             </Suspense>
           )
         })}
+        {ws.liveAsm && <LiveAssembly doc={ws.liveAsm} theme={theme} groupRef={groupRef} />}
         {clash && (
           <Suspense fallback={null}>
             <ClashMarker key={clash.mesh} mesh={clash.mesh} at={clash.at} volume={clash.volume_mm3} />
@@ -171,28 +169,6 @@ function BrepPlaced({ url, ...props }: PlacedProps & { url: string }) {
   return <Placed {...props} raw={raw} />
 }
 
-// Every copy of a part shares one prepared geometry.
-const prepared = new WeakMap<BufferGeometry, { geometry: BufferGeometry; edges: BufferGeometry; center: Vector3 }>()
-
-function prepare(raw: BufferGeometry) {
-  let out = prepared.get(raw)
-  const brep = brepOf(raw)
-  if (!out && brep) {
-    // Built parts arrive with real normals and their B-rep edges.
-    raw.computeBoundingBox()
-    out = { geometry: raw, edges: brep.edges, center: raw.boundingBox!.getCenter(new Vector3()) }
-    prepared.set(raw, out)
-  }
-  if (!out) {
-    const merged = mergeVertices(raw.clone().deleteAttribute('normal'), 1e-4)
-    const box = new Box3().setFromBufferAttribute(merged.getAttribute('position') as never)
-    out = { geometry: toCreasedNormals(merged, Math.PI / 7), edges: new EdgesGeometry(merged, 28), center: box.getCenter(new Vector3()) }
-    prepared.set(raw, out)
-  }
-  return out
-}
-
-const CLASH = new Color('#d8453b')
 
 function Placed({ inst, part, raw, theme, callout }: PlacedProps & { raw: BufferGeometry }) {
   const ws = useWorkspace()
@@ -359,8 +335,9 @@ function KeyboardControls() {
       // Sliders and swatches keep focus after use; only text entry should swallow keys.
       if (t.closest('textarea, [contenteditable], input:not([type=range]):not([type=color])')) return
       if (e.key === 'f') ws.fit()
-      else if (e.key === 'e') ws.setExploded((x) => !x)
       else if (e.key === 's') ws.setSection((x) => !x)
+      else if (ws.liveAsm) liveKeys(e, ws)
+      else if (e.key === 'e') ws.setExploded((x) => !x)
       else if (e.key === ' ' && ws.view === 'assembly') {
         e.preventDefault()
         ws.setPlaying((x) => !x)
@@ -377,4 +354,18 @@ function KeyboardControls() {
     return () => window.removeEventListener('keydown', onKey)
   }, [ws, gl])
   return null
+}
+
+/** In a live assembly: Esc steps back out (finding → isolation → pick), H hides the pick, Enter opens its part. */
+function liveKeys(e: KeyboardEvent, ws: ReturnType<typeof useWorkspace>) {
+  const doc = ws.liveAsm!
+  if (e.key === 'Escape') {
+    if (ws.finding !== null) ws.setFinding(null)
+    else if (ws.isolated) ws.setIsolated(null)
+    else ws.setPick(null)
+  } else if (e.key === 'h' && ws.pick) ws.setInstanceLook(`${doc.id}/${ws.pick}`, { hidden: true })
+  else if (e.key === 'Enter' && ws.pick) {
+    const leaf = doc.leaves.find((l) => l.path === ws.pick)
+    if (leaf && 'part' in leaf.ref) ws.openPart(leaf.ref.part)
+  }
 }
