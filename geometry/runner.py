@@ -505,7 +505,8 @@ def _assembly_job(job: dict, conn) -> None:
     resource.setrlimit(resource.RLIMIT_AS, (MEMORY_LIMIT, MEMORY_LIMIT))
     files = tempfile.mkdtemp(prefix="assets-")
     try:
-        conn.send(_assembly_in(job, _environment({}, job.get("parts") or {}, files, job.get("components") or {})))
+        assets = {str(k): base64.b64decode(v) for k, v in (job.get("assets") or {}).items()}
+        conn.send(_assembly_in(job, _environment(assets, job.get("parts") or {}, files, job.get("components") or {})))
     except BaseException as exc:
         from geometry.assembly import AssemblyError
 

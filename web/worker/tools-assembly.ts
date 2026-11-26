@@ -193,7 +193,7 @@ export const ASSEMBLY_TOOLS: ToolSpec[] = [
       'Add or move instances in an assembly, then save and check it like write_assembly. Each entry is merged into the instance with that id (give ref and name for a new one); pos, rot, snap and ground replace what it had. Returns the report and a render.',
     schema: {
       type: 'object',
-      properties: { assembly: ASM, instances: { type: 'array', items: INSTANCE, minItems: 1 }, note: { type: 'string' }, ...RENDER_OPTS },
+      properties: { assembly: ASM, instances: { type: 'array', items: INSTANCE, description: 'Instances to add or change; [] re-places and re-checks the assembly as it is (after its parts changed).' }, note: { type: 'string' }, ...RENDER_OPTS },
       required: ['assembly', 'instances'],
       additionalProperties: false,
     },
@@ -306,7 +306,7 @@ const Render = { views: z.array(View).max(6).optional(), section: Section.option
 const Note = z.string().max(120).optional()
 
 export const WriteAssembly = z.object({ id: Id, name: z.string().min(1).max(80), instances: z.array(InstanceSchema).max(200), requirements: z.array(RequirementSchema).max(100).optional(), clearance: z.number().min(0).max(50).optional(), note: Note, ...Render }).strict()
-export const Place = z.object({ assembly: Id, instances: z.array(InstancePatch).min(1).max(200), note: Note, ...Render }).strict()
+export const Place = z.object({ assembly: Id, instances: z.array(InstancePatch).max(200), note: Note, ...Render }).strict()
 export const RemoveInstances = z.object({ assembly: Id, ids: z.array(Id).min(1), note: Note }).strict()
 export const ReadAssembly = z.object({ assembly: Id, version: z.number().int().min(1).optional() }).strict()
 export const CheckAssembly = z.object({ assembly: Id, clearance: z.number().min(0).max(50).optional(), requirements: z.array(RequirementSchema).max(100).optional(), time_limit: z.number().min(1).max(240).optional(), ...Render }).strict()

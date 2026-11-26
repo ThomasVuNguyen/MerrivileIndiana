@@ -3,8 +3,9 @@ import { z } from 'zod'
 import { MATERIALS } from '../shared/protocol'
 import type { Attachment, BuildError, CallState, ChangeNote, ChatEntry, ClientEvent, Datum, FaceRef, PartDoc, PartHardware, PartMetrics, ServerEvent } from '../shared/protocol'
 import { endNote, runAgent } from './agent'
-import { componentsIn, datumLine, geometryJson } from './components'
-import type { ComponentRef } from './components'
+import { Assemblies } from './assemblies'
+import { componentsIn, datumLine, geometryJson, runComponentTool } from './components'
+import type { ComponentRef, ComponentToolApi } from './components'
 import { accountOf } from './env'
 import type { Env } from './env'
 import { runInspect } from './inspect'
@@ -14,6 +15,7 @@ import type { Block, HistoryItem, ToolResult } from './llm'
 import { ModelError } from './llm'
 import { SYSTEM, TOOLS } from './prompt'
 import { attachmentBlocks, hydrator, labels, MODEL_STEP } from './files'
+import { ASSEMBLY_TOOL_NAMES, COMPONENT_TOOL_NAMES } from './tools-assembly'
 import { runShopTool, SHOP_TOOL_NAMES } from './tools-shop'
 import type { ShopApi } from './tools-shop'
 import { Threads } from './threads'
@@ -79,6 +81,7 @@ export type AgentReply = { content: Extract<Block, { type: 'text' | 'image' }>[]
 export class Project extends DurableObject<Env> {
   private sql: SqlStorage
   private threads: Threads
+  private asm: Assemblies
   private abort: AbortController | null = null
   /** The thread the current run, restore or import writes to (one at a time per project). */
   private thread = ''
@@ -93,6 +96,16 @@ export class Project extends DurableObject<Env> {
         created_at INTEGER NOT NULL, PRIMARY KEY (part, version));
 `)
     this.threads = new Threads(this.sql, { chat: 'chat', history: 'history' })
+    this.asm = new Assemblies({
+      sql: this.sql,
+      env: this.env,
+      projectId: () => this.projectId(),
+      parts: () => this.parts(),
+      part: (id) => this.part(id),
+      componentRefs: async (ids) => (ids.length ? ((await this.account().componentRefs(ids)) as unknown as ComponentRef[]) : []),
+      partInputs: (code) => this.partInputs(code),
+      broadcast: (event) => this.broadcast(event),
+    })
     // Version notes arrived after the first projects were made.
     const columns = this.sql.exec<{ name: string }>('PRAGMA table_info(versions)').toArray()
     if (!columns.some((c) => c.name === 'note')) this.sql.exec("ALTER TABLE versions ADD COLUMN note TEXT NOT NULL DEFAULT ''")
@@ -123,7 +136,7 @@ export class Project extends DurableObject<Env> {
         type: 'snapshot',
         project: info,
         parts: this.parts(),
-        assemblies: [],
+        assemblies: this.asm.list(),
         chat: this.threads.entries(thread),
         running: !!this.abort,
         threads: this.threads.list(),
@@ -251,7 +264,9 @@ export class Project extends DurableObject<Env> {
           afterRound: () => this.saveChat(index, entry),
           describe: (id) => entry.calls.find((c) => c.id === id)?.detail,
           execute: (call) =>
-            SHOP_TOOL_NAMES.has(call.name) ? this.shopTool(call, entry, index, shopCtx) : this.execute(call, { entry, index, thread }, cfg.vision, abort.signal),
+            SHOP_TOOL_NAMES.has(call.name)
+              ? this.shopTool(call, entry, index, shopCtx)
+              : this.execute(call, { entry, index, thread }, cfg.vision, abort.signal, shopCtx.attachments),
         },
       })
       apiCalls = r.apiCalls
@@ -465,7 +480,7 @@ export class Project extends DurableObject<Env> {
   }
 
   /** A part tool, from the chat's AI or an outside agent; `log` is the chat entry that shows it. */
-  private async execute(call: Extract<Block, { type: 'tool_call' }>, log: { entry: AiEntry; index: number; thread: string }, vision: boolean, signal: AbortSignal): Promise<ToolResult> {
+  private async execute(call: Extract<Block, { type: 'tool_call' }>, log: { entry: AiEntry; index: number; thread: string }, vision: boolean, signal: AbortSignal, attachments: Attachment[] = []): Promise<ToolResult> {
     const state: CallState = { id: call.id, tool: call.name, detail: '', state: 'running' }
     log.entry.calls.push(state)
     const started = Date.now()
@@ -478,6 +493,18 @@ export class Project extends DurableObject<Env> {
       return { id: call.id, isError: true, content: [{ type: 'text', text }] }
     }
     try {
+      if (ASSEMBLY_TOOL_NAMES.has(call.name)) {
+        const input = call.input as { assembly?: unknown; id?: unknown }
+        update({ detail: String(input.assembly ?? input.id ?? '') })
+        const r = await this.asm.run(call.name, call.input, signal, vision)
+        update({ state: r.isError ? 'error' : 'done', detail: r.detail, ms: Date.now() - started })
+        return { id: call.id, content: r.content, ...(r.isError && { isError: true }) }
+      }
+      if (COMPONENT_TOOL_NAMES.has(call.name)) {
+        const r = await runComponentTool(call.name, call.input, { env: this.env, uid: this.meta('owner'), api: this.account() as unknown as ComponentToolApi, attachments })
+        update({ state: r.isError ? 'error' : 'done', detail: r.detail, ms: Date.now() - started })
+        return { id: call.id, content: vision ? r.content : r.content.filter((b) => b.type !== 'image'), ...(r.isError && { isError: true }) }
+      }
       if (call.name === 'read_part') {
         const input = ReadPart.safeParse(call.input)
         if (!input.success) return fail(invalid(call.input, input.error), 'invalid input')
@@ -623,7 +650,7 @@ export class Project extends DurableObject<Env> {
       req.note ?? '',
       built.datums ? JSON.stringify(built.datums) : '',
     )
-    const stale = this.markStale(req.id, version)
+    const stale = [...this.markStale(req.id, version), ...this.asm.markStale(req.id, version)]
     this.savePart(built)
     const m = out.metrics
     update({ state: 'done', detail: `${req.id} v${version} · ${m.faces} faces · ${(m.volume_mm3 / 1000).toFixed(1)} cm³`, ms: Date.now() - started })
@@ -703,6 +730,12 @@ export class Project extends DurableObject<Env> {
       )
     }
 
+    if (name === 'list_assemblies' || name === 'read_assembly') {
+      const { project: _p, ...args } = input
+      const r = await this.asm.run(name, args, signal, false)
+      return { content: r.content as AgentReply['content'], isError: r.isError }
+    }
+
     // Everything below changes or builds something; it shows in the agent's chat.
     const log = this.agentLog()
     const finish = (line?: string) => {
@@ -713,6 +746,23 @@ export class Project extends DurableObject<Env> {
     }
     const tell = (fact: string) => this.threads.append(log.thread, { role: 'user', content: [{ type: 'text', text: `[An outside agent (MCP) ${fact}]` }] })
     try {
+      if (ASSEMBLY_TOOL_NAMES.has(name)) {
+        const state: CallState = { id: `mcp-${name}-${Date.now()}`, tool: name, detail: String(input.assembly ?? input.id ?? ''), state: 'running' }
+        log.entry.calls.push(state)
+        this.toThread({ type: 'call', index: log.index, call: state }, log.thread)
+        const started = Date.now()
+        const { project: _p, caption: _c, ...args } = input
+        const r = await this.asm.run(name, name === 'render_assembly' ? { ...args, ...(input.caption !== undefined && { caption: input.caption }) } : args, signal, true)
+        Object.assign(state, { state: r.isError ? 'error' : 'done', detail: r.detail, ms: Date.now() - started })
+        if (r.render) {
+          // Saves and renders show in the agent's chat, with the agent's caption or the save's summary.
+          const caption = (typeof input.caption === 'string' && input.caption.trim().slice(0, 500)) || r.line || ''
+          log.entry.images = [...(log.entry.images ?? []), { key: r.render, url: `/api/files/${r.render}`, kind: 'image', name: `${String(input.assembly ?? input.id ?? 'assembly')}.png`, ...(caption && { caption }) }]
+        }
+        if (r.fact) tell(r.fact)
+        finish(r.line)
+        return { content: r.content as AgentReply['content'], isError: r.isError, render: r.render }
+      }
       if (name === 'write_part' || name === 'edit_part' || name === 'set_part_hardware') {
         const r = await this.execute({ type: 'tool_call', id: `mcp-${crypto.randomUUID().slice(0, 8)}`, name, input }, log, true, signal)
         const part = this.part(id)

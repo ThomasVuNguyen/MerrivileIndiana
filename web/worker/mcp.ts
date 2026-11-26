@@ -13,7 +13,7 @@ import type { Section, View } from './inspect'
 import { blockForLog, Trace } from './langfuse'
 import type { Block } from './llm'
 import { SYSTEM, TOOLS } from './prompt'
-import { COMPONENT_TOOL_NAMES, COMPONENT_TOOLS } from './tools-assembly'
+import { ASSEMBLY_TOOLS, COMPONENT_TOOL_NAMES, COMPONENT_TOOLS } from './tools-assembly'
 import { runShopTool, SHOP_TOOLS } from './tools-shop'
 import type { ShopApi } from './tools-shop'
 
@@ -82,6 +82,19 @@ function inProject(name: string, description?: string): Spec {
   return { name, description: description ?? t.description, inputSchema: { ...s, properties: { project: PROJECT, ...s.properties }, required: ['project', ...s.required] } }
 }
 
+/** An assembly tool, inside a project. */
+function assemblyTool(name: string): Spec {
+  const t = ASSEMBLY_TOOLS.find((x) => x.name === name)!
+  const s = t.schema as { properties: Record<string, unknown>; required?: string[] }
+  const properties = name === 'render_assembly' ? { ...s.properties, section: SECTION, caption: CAPTION } : { ...s.properties, ...(s.properties.section ? { section: SECTION } : {}) }
+  return {
+    name,
+    description: t.description,
+    inputSchema: { ...s, properties: { project: PROJECT, ...properties }, required: ['project', ...(s.required ?? [])] },
+    ...(['read_assembly', 'list_assemblies', 'render_assembly', 'check_assembly'].includes(name) && { annotations: READ }),
+  }
+}
+
 const PROJECT_TOOLS: Spec[] = [
   { name: 'list_parts', description: 'Every part in a project: id, name, version, material, build status, bounding box, volume, mass, hardware, the parts it uses and whether it is out of date.', inputSchema: obj({ project: PROJECT }, ['project']), annotations: READ },
   {
@@ -128,6 +141,7 @@ const PROJECT_TOOLS: Spec[] = [
       ['project', 'name'],
     ),
   },
+  ...ASSEMBLY_TOOLS.map((t) => assemblyTool(t.name)),
   {
     name: 'read_chats',
     description: "The project's chats with the in-app AI: without chat, the list; with a chat id, its latest messages (the person's requests, the AI's tool calls and answers). Useful to learn what the person asked for.",
