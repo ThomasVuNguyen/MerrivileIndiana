@@ -668,11 +668,17 @@ def _leaf_colours(placed: list, colors: dict) -> dict:
             nxt = next(palette, None)
             if nxt is None:
                 c = want or "#b9bcc2"
-            elif all(_far(_rgb(nxt), u) for u in used) and _far(_rgb(nxt), (255.0, 0.0, 0.0)):
+            elif all(_far(_rgb(nxt), u) for u in used) and _not_red(_rgb(nxt)):
                 c = nxt
         used.append(_rgb(c))
         out[l["path"]] = c
     return out
+
+
+def _not_red(rgb) -> bool:
+    """Clashes are drawn red; instances get no colour that could pass for it."""
+    r, g, b = rgb
+    return not (r > 180 and g < 130 and b < 140)
 
 
 def _export(placed: list, path: str, name: str) -> None:

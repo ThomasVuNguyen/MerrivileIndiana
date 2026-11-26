@@ -169,6 +169,28 @@ export class Assemblies {
         render: key,
       }
     }
+    if (name === 'check_assembly') {
+      const f = parse(T.CheckAssembly) as { assembly: string; clearance?: number; requirements?: Requirement[]; time_limit?: number; views?: string[]; section?: unknown } | null
+      if (!f) return bad(T.CheckAssembly)
+      const doc = this.get(f.assembly)
+      if (!doc) return fail(this.missing(f.assembly), `${f.assembly} · not found`)
+      const saved = specOf(doc)
+      const spec: Spec = { ...saved, clearance: f.clearance ?? saved.clearance, requirements: [...saved.requirements, ...(f.requirements ?? [])] }
+      const started = Date.now()
+      const out = await this.layout(doc.id, spec, doc, { check: true, render: { views: f.views, section: f.section }, time_limit: f.time_limit }, signal)
+      if (typeof out === 'string') return fail(out, 'not checked')
+      if (!out.ok) return fail(out.error.message, out.error.type)
+      const report = toReport(out, spec.clearance, () => undefined)
+      const preview = await this.document(doc.id, spec, out, doc.version, report, doc.files)
+      let render: string | undefined
+      const content: Block[] = [{ type: 'text', text: `Checked ${doc.id} in ${((Date.now() - started) / 1000).toFixed(1)} s (not saved; placed from its parts' latest versions${f.clearance !== undefined ? `, clearance ${spec.clearance} mm` : ''}${f.requirements?.length ? `, ${f.requirements.length} extra requirement${f.requirements.length === 1 ? '' : 's'}` : ''}).\n${describe(preview, false)}` }]
+      if (out.render) {
+        render = `projects/${this.h.projectId()}/renders/${crypto.randomUUID()}.png`
+        await this.h.env.FILES.put(render, bytes(out.render), { httpMetadata: { contentType: 'image/png' } })
+        if (withImage) content.push({ type: 'image', mediaType: 'image/png', data: out.render })
+      }
+      return { content, detail: `${doc.id} · ${report.warnings} warnings${report.partial ? ' · partial' : ''}`, render, line: `Checked ${doc.name}: ${report.warnings ? `${report.warnings} warnings` : 'no warnings'}` }
+    }
     return fail(`Unknown tool ${name}.`, 'unknown tool')
   }
 
@@ -372,7 +394,7 @@ function keyOfRef(ref: AssemblyLeaf['ref'], pinned: boolean) {
   return pinned ? `part:${ref.part}@${ref.version}` : `part:${ref.part}`
 }
 
-function toReport(out: Extract<GeoOut, { ok: true }>, clearance: number, meshUrl: (k: number) => string): CheckReport {
+function toReport(out: Extract<GeoOut, { ok: true }>, clearance: number, meshUrl: (k: number) => string | undefined): CheckReport {
   const findings: Finding[] = out.findings.map((f) => ({ ...f, mesh: f.mesh !== undefined ? meshUrl(f.mesh) : undefined }))
   const counts: Partial<Record<FindingKind, number>> = {}
   for (const f of findings) counts[f.kind] = (counts[f.kind] ?? 0) + 1
