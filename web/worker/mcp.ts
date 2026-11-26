@@ -2,8 +2,10 @@
 // (Claude Code and others) can build, edit, measure and review parts with the same powers as the
 // in-app AI. They sign in with the account's email and password in the Authorization header.
 
-import { signedLink } from './auth'
+import { signedLink, signedUpload } from './auth'
 import type { Directory, User } from './auth'
+import { runComponentTool } from './components'
+import type { ComponentToolApi } from './components'
 import type { Env } from './env'
 import { accountOf } from './env'
 import { runInspect } from './inspect'
@@ -11,6 +13,7 @@ import type { Section, View } from './inspect'
 import { blockForLog, Trace } from './langfuse'
 import type { Block } from './llm'
 import { SYSTEM, TOOLS } from './prompt'
+import { COMPONENT_TOOL_NAMES, COMPONENT_TOOLS } from './tools-assembly'
 import { runShopTool, SHOP_TOOLS } from './tools-shop'
 import type { ShopApi } from './tools-shop'
 
@@ -144,6 +147,29 @@ const ACCOUNT_TOOLS: Spec[] = [
     annotations: { destructiveHint: true },
   },
   { name: 'list_memory', description: "The person's saved preferences (memory), with ids.", inputSchema: obj({}), annotations: READ },
+  // Components are the account's, usable in every project.
+  ...COMPONENT_TOOLS.map((t): Spec => {
+    const s = t.schema as { properties: Record<string, unknown>; required?: string[] }
+    const { attachment: _a, ...properties } = s.properties
+    return { name: t.name, description: t.description, inputSchema: { ...s, properties }, ...(['list_components', 'read_component'].includes(t.name) && { annotations: READ }) }
+  }),
+  {
+    name: 'start_upload',
+    description:
+      'A one-time link (valid 1 hour, up to 95 MB) to upload a STEP file from your machine as a new component: curl -sS -T "Board.step" "<link>" (PUT; POST with --data-binary @file works too). The upload is read right away (a 13 MB board takes about 30 s) and curl prints the new component id. Use it for files too big to send as base64.',
+    inputSchema: obj(
+      {
+        file: { type: 'string', description: 'The file name, e.g. "Raspberry Pi Zero 2 W.STEP".' },
+        id: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,40}$' },
+        name: { type: 'string' },
+        vendor: { type: 'string' },
+        part_number: { type: 'string' },
+        link: { type: 'string' },
+        notes: { type: 'string' },
+      },
+      ['file'],
+    ),
+  },
 ]
 
 // The chat AI's shop, memory and Library tools. Saving a message's attachment has no meaning here.
@@ -257,6 +283,18 @@ async function callTool(name: string, input: Record<string, unknown>, o: { env: 
   if (name === 'list_memory') {
     const all = await account.memories()
     return text(all.map((m) => `[${m.id}] ${m.text}${m.scopeName ? ` (project ${m.scopeName})` : ''}`).join('\n') || 'No memories saved.')
+  }
+
+  if (COMPONENT_TOOL_NAMES.has(name)) {
+    const r = await runComponentTool(name, input, { env, uid: user.id, api: account as unknown as ComponentToolApi })
+    return { content: toContent(r.content), isError: r.isError }
+  }
+  if (name === 'start_upload') {
+    const file = String(input.file ?? '').replace(/[^\w. ()-]/g, '_').slice(0, 160) || 'component.step'
+    const meta = { file, ...Object.fromEntries(['id', 'name', 'vendor', 'part_number', 'link', 'notes'].filter((k) => typeof input[k] === 'string').map((k) => [k, input[k]])) }
+    const id = await account.startUpload(meta, 3600_000)
+    const link = await signedUpload(o.directory, o.origin, user.id, id)
+    return text(`Upload link for ${file} (one use, valid 1 hour, up to 95 MB):\n${link}\nFor example: curl -sS -T "${file}" "${link}"\nThe reply names the new component once it's read (about 30 s for a 13 MB board).`)
   }
 
   if (name === 'inspect' && !projectId) {

@@ -1,6 +1,8 @@
 import { DurableObject } from 'cloudflare:workers'
-import type { Attachment, CallState, ChatEntry, ClientEvent, Memory, ModelInfo, NewModel, ProjectInfo, Provider, ServerEvent, ShopItem, ShopTool, Tier } from '../shared/protocol'
+import type { Attachment, CallState, ChatEntry, ClientEvent, ComponentDoc, Memory, ModelInfo, NewModel, ProjectInfo, Provider, ServerEvent, ShopItem, ShopTool, Tier } from '../shared/protocol'
 import { endNote, runAgent } from './agent'
+import { refOf } from './components'
+import type { ComponentRef } from './components'
 import type { Env } from './env'
 import { AnthropicAdapter } from './anthropic'
 import { forLog, Trace } from './langfuse'
@@ -54,7 +56,9 @@ export class Account extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, parts INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL, thumb TEXT);
-      CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);`)
+      CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS components (id TEXT PRIMARY KEY, doc TEXT NOT NULL, names TEXT NOT NULL DEFAULT '[]');
+      CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, meta TEXT NOT NULL, expires_at INTEGER NOT NULL);`)
     this.shop = new ShopStore(this.sql)
     this.threads = new Threads(this.sql, { chat: 'shop_chat', history: 'shop_history' })
   }
@@ -145,6 +149,63 @@ export class Account extends DurableObject<Env> {
       patch.thumb ?? null,
       id,
     )
+  }
+
+  // ---------------------------------------------------------------- components (vendor STEP models, account-wide)
+
+  listComponents(): ComponentDoc[] {
+    return this.sql
+      .exec<{ doc: string }>('SELECT doc FROM components')
+      .toArray()
+      .map((r) => JSON.parse(r.doc) as ComponentDoc)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+
+  component(id: string): ComponentDoc | null {
+    const row = this.sql.exec<{ doc: string }>('SELECT doc FROM components WHERE id = ?', id).toArray()[0]
+    return row ? JSON.parse(row.doc) : null
+  }
+
+  /** Saves a component's record; `names` (each solid's label from the STEP) only on import. */
+  saveComponent(doc: ComponentDoc, names?: string[]): ComponentDoc {
+    if (names) this.sql.exec('INSERT OR REPLACE INTO components (id, doc, names) VALUES (?, ?, ?)', doc.id, JSON.stringify(doc), JSON.stringify(names))
+    else this.sql.exec('UPDATE components SET doc = ? WHERE id = ?', JSON.stringify(doc), doc.id)
+    return doc
+  }
+
+  removeComponent(id: string): boolean {
+    const had = !!this.component(id)
+    this.sql.exec('DELETE FROM components WHERE id = ?', id)
+    return had
+  }
+
+  /** What geometry calls need for these components (unknown ids are skipped). */
+  componentRefs(ids: string[]): ComponentRef[] {
+    const out: ComponentRef[] = []
+    for (const id of new Set(ids)) {
+      const row = this.sql.exec<{ doc: string; names: string }>('SELECT doc, names FROM components WHERE id = ?', id).toArray()[0]
+      if (row) out.push(refOf(JSON.parse(row.doc), JSON.parse(row.names)))
+    }
+    return out
+  }
+
+  /** A one-time upload an agent was given a signed link for (start_upload); it finishes into a component. */
+  startUpload(meta: Record<string, unknown>, ttlMs: number) {
+    const id = crypto.randomUUID().replace(/-/g, '').slice(0, 20)
+    this.sql.exec('DELETE FROM uploads WHERE expires_at < ?', Date.now())
+    this.sql.exec('INSERT INTO uploads VALUES (?, ?, ?)', id, JSON.stringify(meta), Date.now() + ttlMs)
+    return id
+  }
+
+  /** The upload's details, once: a link can't be used twice. */
+  takeUpload(id: string): Record<string, unknown> | null {
+    const row = this.sql.exec<{ meta: string; expires_at: number }>('SELECT meta, expires_at FROM uploads WHERE id = ?', id).toArray()[0]
+    this.sql.exec('DELETE FROM uploads WHERE id = ?', id)
+    return row && row.expires_at > Date.now() ? JSON.parse(row.meta) : null
+  }
+
+  libraryItem(id: string) {
+    return this.shop.libraryItem(id)
   }
 
   // ---------------------------------------------------------------- shop and memory (RPC for Project and the Worker)

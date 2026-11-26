@@ -143,6 +143,17 @@ export async function signedLink(directory: DurableObjectStub<Directory>, origin
   return `${origin}/api/dl/${key}?e=${exp}&s=${await hmac(await directory.secret(), `${key}\n${exp}`)}`
 }
 
+/** A one-time upload link (start_upload): PUT or POST the raw file to it. Signed like download links. */
+export async function signedUpload(directory: DurableObjectStub<Directory>, origin: string, uid: string, id: string, ttlSeconds = 3600) {
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds
+  return `${origin}/api/up/${uid}/${id}?e=${exp}&s=${await hmac(await directory.secret(), `upload\n${uid}/${id}\n${exp}`)}`
+}
+
+export async function checkUpload(directory: DurableObjectStub<Directory>, uid: string, id: string, exp: string, sig: string) {
+  if (!(Number(exp) > Date.now() / 1000)) return false
+  return equal(new TextEncoder().encode(await hmac(await directory.secret(), `upload\n${uid}/${id}\n${exp}`)), new TextEncoder().encode(sig))
+}
+
 export async function checkLink(directory: DurableObjectStub<Directory>, key: string, exp: string, sig: string) {
   if (!(Number(exp) > Date.now() / 1000)) return false
   return equal(new TextEncoder().encode(await hmac(await directory.secret(), `${key}\n${exp}`)), new TextEncoder().encode(sig))

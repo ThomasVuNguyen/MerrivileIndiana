@@ -1,9 +1,11 @@
 // Analysis runs for outside agents (MCP): code that loads the project's parts with part(id),
-// measures, checks fits and renders, without saving anything.
+// components with component(id) and placed assemblies with assembly(id), measures, checks fits and
+// renders, without saving anything.
 
 import type { BuildError, PartMetrics } from '../shared/protocol'
+import { geometryJson } from './components'
+import type { ComponentRef } from './components'
 import type { Env } from './env'
-import { geometryFetch } from './geometry'
 import type { Block } from './llm'
 
 export type View = string | { name?: string; dir: number[]; up?: number[] }
@@ -19,6 +21,10 @@ export type InspectRequest = {
   assets?: Record<string, string>
   /** Part id → its display colour, so each part shows in its own colour. */
   colors?: Record<string, string>
+  /** Components the code names, for component(id). */
+  components?: ComponentRef[]
+  /** Assembly id → its placed leaves ({path, name, key, matrix}), for assembly(id). */
+  assemblies?: Record<string, unknown[]>
   views?: View[]
   size?: number
   section?: Section
@@ -31,9 +37,8 @@ type InspectOut =
 
 /** Runs the code in the geometry service and turns the answer into tool-result blocks. */
 export async function runInspect(env: Env, req: InspectRequest, signal?: AbortSignal): Promise<{ content: Block[]; isError?: boolean; summary: string; png?: string }> {
-  const res = await geometryFetch(env, '/inspect', { method: 'POST', body: JSON.stringify({ timeout: 120, ...req }), signal })
-  if (!res.ok) throw new Error(`geometry service answered HTTP ${res.status}`)
-  const out = (await res.json()) as InspectOut
+  const { components, ...body } = req
+  const out = await geometryJson<InspectOut>(env, '/inspect', { timeout: 120, ...body }, components ?? [], signal)
   const stdout = out.stdout ? `\nstdout:\n${out.stdout}` : ''
   if (!out.ok) {
     const e = out.error

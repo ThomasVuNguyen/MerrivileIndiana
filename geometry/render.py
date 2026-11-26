@@ -49,7 +49,7 @@ def render_views(mesh: dict, views: list | None = None, cell: int = CELL, legend
     views = views or VIEWS
     arrays = mesh["_arrays"]
     pos, tris, edges = arrays["positions"].astype(np.float64), arrays["indices"].astype(np.int64), arrays["edges"].astype(np.float64)
-    tri_rgb, tri_cut = arrays.get("colors"), arrays.get("cut")
+    tri_rgb, tri_cut, tri_top = arrays.get("colors"), arrays.get("cut"), arrays.get("top")
     cols = 1 if len(views) == 1 else 2
     rows = (len(views) + cols - 1) // cols
     font = ImageFont.load_default()
@@ -59,7 +59,7 @@ def render_views(mesh: dict, views: list | None = None, cell: int = CELL, legend
     lo, hi = pos.min(axis=0), pos.max(axis=0)
     size = hi - lo
     for i, (name, d, up) in enumerate(views):
-        img = _render_one(pos, tris, edges, np.array(d, dtype=np.float64), np.array(up, dtype=np.float64), cell=cell, tri_rgb=tri_rgb, tri_cut=tri_cut)
+        img = _render_one(pos, tris, edges, np.array(d, dtype=np.float64), np.array(up, dtype=np.float64), cell=cell, tri_rgb=tri_rgb, tri_cut=tri_cut, tri_top=tri_top)
         sheet.paste(img, ((i % cols) * cell, (i // cols) * cell))
     draw = ImageDraw.Draw(sheet)
     for i, (name, _, _) in enumerate(views):
@@ -95,16 +95,22 @@ def _legend_layout(legend: list, width: int, font) -> list:
 
 
 def merge(items: list) -> dict:
-    """One mesh's `_arrays` from several: items are (arrays, (r, g, b), cut mask per triangle or None)."""
-    pos, idx, edges, colors, cut = [], [], [], [], []
+    """One mesh's `_arrays` from several: items are (arrays, (r, g, b), cut mask per triangle or None[, on top]).
+
+    Items marked on top (clash volumes) are drawn over everything else.
+    """
+    pos, idx, edges, colors, cut, top = [], [], [], [], [], []
     offset = 0
-    for arrays, rgb, mask in items:
+    for arrays, rgb, mask, *over in items:
         p, t = arrays["positions"], arrays["indices"]
         pos.append(p)
         idx.append(t.astype(np.int64) + offset)
         edges.append(arrays["edges"])
         colors.append(np.tile(np.asarray(rgb, dtype=np.float64), (len(t), 1)))
         cut.append(np.zeros(len(t), dtype=bool) if mask is None else mask)
+        top.append(np.full(len(t), bool(over and over[0])))
+        if over and over[0]:
+            edges[-1] = np.zeros((0, 3), np.float32)
         offset += len(p)
     cat = lambda xs, shape, dtype: np.concatenate(xs) if xs else np.zeros(shape, dtype)
     return {
@@ -113,6 +119,7 @@ def merge(items: list) -> dict:
         "edges": cat(edges, (0, 3), np.float32),
         "colors": cat(colors, (0, 3), np.float64),
         "cut": cat(cut, (0,), bool),
+        "top": cat(top, (0,), bool),
     }
 
 
@@ -121,7 +128,7 @@ def render_thumb(mesh: dict) -> bytes:
     arrays = mesh["_arrays"]
     pos, tris, edges = arrays["positions"].astype(np.float64), arrays["indices"].astype(np.int64), arrays["edges"].astype(np.float64)
     name, d, up = VIEWS[0]
-    img = _render_one(pos, tris, edges, np.array(d), np.array(up), triad=False)
+    img = _render_one(pos, tris, edges, np.array(d), np.array(up), triad=False, tri_rgb=arrays.get("colors"), tri_cut=arrays.get("cut"), tri_top=arrays.get("top"))
     h = int(CELL * 10 / 16)
     top = (CELL - h) // 2
     buf = io.BytesIO()
@@ -139,7 +146,8 @@ def _basis(d: np.ndarray, up: np.ndarray):
     return right, true_up, fwd
 
 
-def _render_one(pos, tris, edges, d, up, triad: bool = True, cell: int = CELL, tri_rgb=None, tri_cut=None) -> Image.Image:
+def _render_one(pos, tris, edges, d, up, triad: bool = True, cell: int = CELL, tri_rgb=None, tri_cut=None, tri_top=None) -> Image.Image:
+    """One view. Triangles in `tri_top` (clash volumes) are drawn over everything else, half see-through."""
     W = cell * SS
     right, true_up, fwd = _basis(d, up)
     center = (pos.min(axis=0) + pos.max(axis=0)) / 2
@@ -159,8 +167,9 @@ def _render_one(pos, tris, edges, d, up, triad: bool = True, cell: int = CELL, t
         light = np.array([-0.35, 0.55, 0.76])
         shade = 0.5 + 0.5 * np.clip(nn @ light, 0, 1)
         T = to_px(np.stack([A, B, C], axis=1))
-        for k in np.nonzero(n[:, 2] > 0)[0]:
-            _raster(T[k], k, ids, zbuf)
+        front = n[:, 2] > 0
+        top = np.zeros(len(tris), dtype=bool) if tri_top is None else tri_top.astype(bool)
+        _raster_all(T, np.nonzero(front & ~top)[0], ids, zbuf)
         rgb = (BASE if tri_rgb is None else tri_rgb) * shade[:, None]
         hit = ids >= 0
         color[hit] = rgb[ids[hit]]
@@ -169,31 +178,80 @@ def _render_one(pos, tris, edges, d, up, triad: bool = True, cell: int = CELL, t
             ys, xs = np.nonzero(hit & tri_cut[np.maximum(ids, 0)])
             stripe = ((xs + ys) // SS) % 9 < 2
             color[ys, xs] *= np.where(stripe, 0.45, 0.7)[:, None]
-    img = Image.fromarray(color.astype(np.uint8))
     if len(edges):
-        E = to_px(project(edges).reshape(-1, 2, 3))
-        bias = extent * scale * 0.006
-        draw = ImageDraw.Draw(img)
-        for a, b in E:
-            steps = max(2, int(np.hypot(*(b[:2] - a[:2])) / 2))
-            t = np.linspace(0, 1, steps)
-            pts = a[None, :] * (1 - t[:, None]) + b[None, :] * t[:, None]
-            xi = np.clip(pts[:, 0].astype(int), 0, W - 1)
-            yi = np.clip(pts[:, 1].astype(int), 0, W - 1)
-            seen = pts[:, 2] * scale + bias >= zbuf[yi, xi] * scale
-            # Draw the visible runs of the segment.
-            run = None
-            for i in range(steps):
-                if seen[i] and run is None:
-                    run = i
-                if (not seen[i] or i == steps - 1) and run is not None:
-                    j = i if seen[i] else i - 1
-                    if j > run:
-                        draw.line([tuple(pts[run, :2]), tuple(pts[j, :2])], fill=EDGE, width=SS)
-                    run = None
+        _edges(to_px(project(edges).reshape(-1, 2, 3)), color, zbuf, extent * 0.006)
+    if len(tris) and top.any():
+        # Over the edges too, so a clash inside a part still shows.
+        zt = np.full((W, W), -np.inf)
+        it = np.full((W, W), -1, dtype=np.int64)
+        _raster_all(T, np.nonzero(top)[0], it, zt)
+        on = it >= 0
+        color[on] = color[on] * 0.35 + rgb[it[on]] * 0.65
+    img = Image.fromarray(np.clip(color, 0, 255).astype(np.uint8))
     if triad:
         _triad(ImageDraw.Draw(img), right, true_up, W)
     return img.resize((cell, cell), Image.LANCZOS)
+
+
+SMALL = 8  # triangles whose pixel box fits in SMALL × SMALL are rasterized together
+
+
+def _raster_all(T: np.ndarray, which: np.ndarray, ids: np.ndarray, zbuf: np.ndarray) -> None:
+    """Rasterize triangles `which` of T (screen x, y, depth) into the z-buffer; larger depth is nearer.
+
+    Small triangles (nearly all of a detailed model) go through numpy in batches; big ones one by one.
+    """
+    W = zbuf.shape[0]
+    if not len(which):
+        return
+    t = T[which]
+    x0 = np.clip(np.floor(t[:, :, 0].min(axis=1)), 0, W - 1).astype(np.int64)
+    x1 = np.clip(np.ceil(t[:, :, 0].max(axis=1)), 0, W - 1).astype(np.int64)
+    y0 = np.clip(np.floor(t[:, :, 1].min(axis=1)), 0, W - 1).astype(np.int64)
+    y1 = np.clip(np.ceil(t[:, :, 1].max(axis=1)), 0, W - 1).astype(np.int64)
+    small = (x1 - x0 < SMALL) & (y1 - y0 < SMALL)
+    for k in which[~small]:
+        _raster(T[k], k, ids, zbuf)
+    idx = np.nonzero(small)[0]
+    oy, ox = np.divmod(np.arange(SMALL * SMALL), SMALL)
+    flat_z, flat_ids = zbuf.reshape(-1), ids.reshape(-1)
+    for c in range(0, len(idx), 40_000):
+        s = idx[c : c + 40_000]
+        tri = t[s]
+        xs = (x0[s, None] + ox[None, :]).astype(np.float64) + 0.5
+        ys = (y0[s, None] + oy[None, :]).astype(np.float64) + 0.5
+        (ax, ay, az), (bx, by, bz), (cx, cy, cz) = (tri[:, i, :].T[:, :, None] for i in range(3))
+        den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+        good = np.abs(den) > 1e-12
+        den = np.where(good, den, 1.0)
+        w0 = ((by - cy) * (xs - cx) + (cx - bx) * (ys - cy)) / den
+        w1 = ((cy - ay) * (xs - cx) + (ax - cx) * (ys - cy)) / den
+        w2 = 1 - w0 - w1
+        inside = good & (w0 >= -1e-6) & (w1 >= -1e-6) & (w2 >= -1e-6) & (xs < x1[s, None] + 1) & (ys < y1[s, None] + 1)
+        z = (w0 * az + w1 * bz + w2 * cz)[inside]
+        pix = (ys[inside].astype(np.int64)) * W + xs[inside].astype(np.int64)
+        tid = np.broadcast_to(which[s][:, None], inside.shape)[inside]
+        np.maximum.at(flat_z, pix, z)
+        win = z >= flat_z[pix]
+        flat_ids[pix[win]] = tid[win]
+
+
+def _edges(E: np.ndarray, color: np.ndarray, zbuf: np.ndarray, bias: float) -> None:
+    """Draw the visible parts of edge segments E (m, 2, 3 in screen space), SS pixels wide."""
+    W = zbuf.shape[0]
+    a, b = E[:, 0], E[:, 1]
+    steps = np.maximum(2, np.ceil(np.hypot(*(b[:, :2] - a[:, :2]).T)).astype(np.int64) + 1)
+    seg = np.repeat(np.arange(len(E)), steps)
+    first = np.repeat(np.cumsum(steps) - steps, steps)
+    t = ((np.arange(len(seg)) - first) / (steps[seg] - 1))[:, None]
+    pts = a[seg] * (1 - t) + b[seg] * t
+    xi = np.clip(pts[:, 0].astype(np.int64), 0, W - 1)
+    yi = np.clip(pts[:, 1].astype(np.int64), 0, W - 1)
+    seen = pts[:, 2] + bias >= zbuf[yi, xi]
+    xi, yi = xi[seen], yi[seen]
+    for dy in range(SS):
+        for dx in range(SS):
+            color[np.clip(yi + dy, 0, W - 1), np.clip(xi + dx, 0, W - 1)] = EDGE
 
 
 def _raster(t: np.ndarray, k: int, ids: np.ndarray, zbuf: np.ndarray) -> None:

@@ -1,5 +1,10 @@
 """Tessellation that keeps B-rep identity: every triangle knows its face, every
-polyline its edge, so the viewer can pick a face and the AI can be told which."""
+polyline its edge, so the viewer can pick a face and the AI can be told which.
+
+The whole shape is meshed once by OpenCASCADE and the triangulations are read face by
+face (a vendor board with 7,000 faces takes about a second); edges are read from the
+same mesh, so they line up with the triangles.
+"""
 
 from __future__ import annotations
 
@@ -9,29 +14,49 @@ import math
 import numpy as np
 
 
-def tessellate(shape) -> dict:
-    bb = shape.bounding_box()
-    diag = max(bb.diagonal, 1e-6)
-    tol = max(0.005, diag * 0.0006)
+def tessellate(shape, tol: float | None = None, info: bool = True) -> dict:
+    """The viewer mesh of `shape`. `tol` overrides the deflection (coarser for pictures of big assemblies);
+    info=False skips the per-face details, which only the viewer needs."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.TopAbs import TopAbs_REVERSED
+    from OCP.TopLoc import TopLoc_Location
+
+    if tol is None:
+        # The quick box: the optimal one takes seconds on a vendor board.
+        tol = max(0.005, max(shape.bounding_box(optimal=False).diagonal, 1e-6) * 0.0006)
     angular = 0.2
+    BRepMesh_IncrementalMesh(shape.wrapped, tol, True, angular, True)
 
     positions: list[np.ndarray] = []
     indices: list[np.ndarray] = []
     face_ranges: list[list[int]] = []
     face_info: list[dict] = []
+    # Each edge's polyline from the first face that has it, keyed by the edge.
+    polylines: dict = {}
     offset = tri_start = 0
     for face in shape.faces():
-        verts, tris = face.tessellate(tol, angular)
-        if not tris:
-            face_ranges.append([tri_start, 0])
+        loc = TopLoc_Location()
+        poly = BRep_Tool.Triangulation_s(face.wrapped, loc)
+        if info:
             face_info.append(_face_info(face))
+        if poly is None or poly.NbTriangles() == 0:
+            face_ranges.append([tri_start, 0])
             continue
-        v = np.array([(p.X, p.Y, p.Z) for p in verts], dtype=np.float32)
-        t = np.array(tris, dtype=np.uint32) + offset
+        v = _nodes(poly, loc)
+        t = np.array([poly.Triangle(i).Get() for i in range(1, poly.NbTriangles() + 1)], dtype=np.int64) - 1
+        if face.wrapped.Orientation() == TopAbs_REVERSED:
+            t = t[:, [0, 2, 1]]
         positions.append(v)
-        indices.append(t)
+        indices.append((t + offset).astype(np.uint32))
         face_ranges.append([tri_start, len(t)])
-        face_info.append(_face_info(face))
+        for edge in face.edges():
+            key = edge.wrapped
+            if key in polylines:
+                continue
+            on = BRep_Tool.PolygonOnTriangulation_s(edge.wrapped, poly, loc)
+            if on is not None:
+                polylines[key] = v[[on.Node(i) - 1 for i in range(1, on.NbNodes() + 1)]]
         offset += len(v)
         tri_start += len(t)
 
@@ -39,7 +64,9 @@ def tessellate(shape) -> dict:
     edge_ranges: list[list[int]] = []
     seg_start = 0
     for edge in shape.edges():
-        pts = _sample_edge(edge, tol)
+        pts = polylines.get(edge.wrapped)
+        if pts is None:
+            pts = _sample_edge(edge, tol)
         segs = np.concatenate([pts[:-1], pts[1:]], axis=1).reshape(-1, 3) if len(pts) > 1 else np.zeros((0, 3), np.float32)
         edge_points.append(segs.astype(np.float32))
         edge_ranges.append([seg_start, len(segs) // 2])
@@ -58,6 +85,16 @@ def tessellate(shape) -> dict:
         # Kept server-side for the render; stripped before the mesh is stored.
         "_arrays": {"positions": pos, "indices": idx, "edges": edges},
     }
+
+
+def _nodes(poly, loc) -> np.ndarray:
+    """A triangulation's nodes in the shape's coordinates."""
+    v = np.array([poly.Node(i).Coord() for i in range(1, poly.NbNodes() + 1)], dtype=np.float64)
+    if not loc.IsIdentity():
+        t = loc.Transformation()
+        m = np.array([[t.Value(r, c) for c in range(1, 5)] for r in range(1, 4)])
+        v = v @ m[:, :3].T + m[:, 3]
+    return v.astype(np.float32)
 
 
 def _face_info(face) -> dict:

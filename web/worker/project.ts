@@ -1,11 +1,12 @@
 import { DurableObject } from 'cloudflare:workers'
 import { z } from 'zod'
 import { MATERIALS } from '../shared/protocol'
-import type { Attachment, BuildError, CallState, ChangeNote, ChatEntry, ClientEvent, FaceRef, PartDoc, PartHardware, PartMetrics, ServerEvent } from '../shared/protocol'
+import type { Attachment, BuildError, CallState, ChangeNote, ChatEntry, ClientEvent, Datum, FaceRef, PartDoc, PartHardware, PartMetrics, ServerEvent } from '../shared/protocol'
 import { endNote, runAgent } from './agent'
+import { componentsIn, datumLine, geometryJson } from './components'
+import type { ComponentRef } from './components'
 import { accountOf } from './env'
 import type { Env } from './env'
-import { geometryFetch } from './geometry'
 import { runInspect } from './inspect'
 import type { Section, View } from './inspect'
 import { Trace } from './langfuse'
@@ -60,6 +61,7 @@ type Build =
       warnings: string[]
       stdout: string
       metrics: PartMetrics
+      datums?: Record<string, Datum>
       mesh: unknown
       step: string
       stl: string
@@ -92,9 +94,10 @@ export class Project extends DurableObject<Env> {
 `)
     this.threads = new Threads(this.sql, { chat: 'chat', history: 'history' })
     // Version notes arrived after the first projects were made.
-    if (!this.sql.exec<{ name: string }>('PRAGMA table_info(versions)').toArray().some((c) => c.name === 'note')) {
-      this.sql.exec("ALTER TABLE versions ADD COLUMN note TEXT NOT NULL DEFAULT ''")
-    }
+    const columns = this.sql.exec<{ name: string }>('PRAGMA table_info(versions)').toArray()
+    if (!columns.some((c) => c.name === 'note')) this.sql.exec("ALTER TABLE versions ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+    // Each version's datums, so an assembly pinned to a version snaps to that version's datums.
+    if (!columns.some((c) => c.name === 'datums')) this.sql.exec("ALTER TABLE versions ADD COLUMN datums TEXT NOT NULL DEFAULT ''")
   }
 
   // The Worker checks the session and that the project belongs to the account before forwarding.
@@ -570,15 +573,10 @@ export class Project extends DurableObject<Env> {
 
     let out: Build
     try {
-      // Other parts' sources for part(id), and files the script reads with asset(name), e.g. an imported STEP.
-      const { parts, assets } = await this.partInputs(req.source, doc.assets)
-      const res = await geometryFetch(this.env, '/build', {
-        method: 'POST',
-        body: JSON.stringify({ id: req.id, source: req.source, timeout: 90, parts, assets, bodies: doc.bodies }),
-        signal,
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      out = await res.json()
+      // Other parts' sources for part(id), files the script reads with asset(name), e.g. an imported STEP,
+      // and the components it uses with component(id).
+      const { parts, assets, components } = await this.partInputs(req.source, doc.assets)
+      out = await geometryJson<Build>(this.env, '/build', { id: req.id, source: req.source, timeout: 90, parts, assets, bodies: doc.bodies }, components, signal)
     } catch (err) {
       if (signal.aborted) throw err
       update({ state: 'error', detail: `${req.id} · geometry service unreachable`, ms: Date.now() - started })
@@ -613,9 +611,18 @@ export class Project extends DurableObject<Env> {
       error: undefined,
       metrics: out.metrics,
       files: { mesh: url('json'), step: url('step'), stl: url('stl'), render: url('png'), thumb: url('thumb.png') },
+      datums: out.datums && Object.keys(out.datums).length ? out.datums : undefined,
       stale: undefined,
     }
-    this.sql.exec('INSERT OR REPLACE INTO versions (part, version, source, created_at, note) VALUES (?, ?, ?, ?, ?)', req.id, version, req.source, Date.now(), req.note ?? '')
+    this.sql.exec(
+      'INSERT OR REPLACE INTO versions (part, version, source, created_at, note, datums) VALUES (?, ?, ?, ?, ?, ?)',
+      req.id,
+      version,
+      req.source,
+      Date.now(),
+      req.note ?? '',
+      built.datums ? JSON.stringify(built.datums) : '',
+    )
     const stale = this.markStale(req.id, version)
     this.savePart(built)
     const m = out.metrics
@@ -849,7 +856,10 @@ export class Project extends DurableObject<Env> {
       const obj = await this.env.FILES.get(`projects/${this.projectId()}/assets/${name}`)
       if (obj) assets[name] = toBase64(new Uint8Array(await obj.arrayBuffer()))
     }
-    return { parts, assets, colors }
+    // Components the code or the parts it reaches use, by the hash of their BREP.
+    const used = componentsIn([code, ...[...seen].map((id) => parts[id] ?? '')].join('\n'))
+    const components = used.length ? ((await this.account().componentRefs(used)) as unknown as ComponentRef[]) : []
+    return { parts, assets, colors, components }
   }
 
   /** The chat entry an outside agent's work shows in: the latest one if it's recent, or a new one. */
@@ -952,6 +962,8 @@ function describe(p: PartDoc, withSource = true) {
   if (p.status === 'error' && p.error) lines.push(`last error: ${p.error.type}: ${p.error.message}`)
   if (p.bodies) lines.push(`bodies: ${p.bodies} (separate solids on purpose)`)
   if (p.uses?.length) lines.push(`uses: ${p.uses.join(', ')}`)
+  const datums = Object.entries(p.datums ?? {})
+  if (datums.length) lines.push(withSource ? `datums:\n${datums.map(([n, d]) => `- ${datumLine(n, d)}`).join('\n')}` : `datums: ${datums.map(([n, d]) => `${n} (${d.kind})`).join(', ')}`)
   if (p.stale?.length)
     lines.push(`OUT OF DATE: ${p.stale.map((s) => `${s.part} is now v${s.version}`).join(', ')}, newer than this build; rebuild it with edit_part edits: []`)
   // What it's bolted together with and how it's made, so the AI doesn't say "no hardware listed".

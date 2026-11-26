@@ -1,7 +1,9 @@
 import { z } from 'zod'
 import { AnthropicAdapter } from './anthropic'
-import { checkLink, COOKIE, headerCredentials, sessionCookie, sessionToken } from './auth'
+import { checkLink, checkUpload, COOKIE, headerCredentials, sessionCookie, sessionToken } from './auth'
 import type { User } from './auth'
+import { componentDir, describeComponent, importComponent, MAX_COMPONENT, patchComponent, SetComponentDatums } from './components'
+import type { ComponentToolApi } from './components'
 import { accountOf, directoryOf } from './env'
 import { kindOf, MAX_UPLOAD, SINGLE_UPLOAD, toBase64 } from './files'
 import { GEOMETRY_VERSION, geometryFetch } from './geometry'
@@ -56,6 +58,18 @@ const LibraryAdd = z.object({
     height: z.number().optional(),
   }),
   note: z.string().max(300).optional(),
+})
+
+// A component from a file the browser uploaded (POST /api/uploads first).
+const ComponentAdd = z.object({
+  key: z.string(),
+  file: z.string().max(160).optional(),
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/).optional(),
+  name: z.string().min(1).max(80).optional(),
+  vendor: z.string().max(80).optional(),
+  part_number: z.string().max(80).optional(),
+  link: z.string().max(500).optional(),
+  notes: z.string().max(2000).optional(),
 })
 
 // Quick edits from the Shop page: steppers, bin, tier.
@@ -145,6 +159,30 @@ export default {
       const key = decodeURIComponent(link[1])
       if (!(await checkLink(directory, key, q.get('e') ?? '', q.get('s') ?? ''))) return new Response('This link expired or is wrong.', { status: 403 })
       return serveFile(env, key, req)
+    }
+
+    // One-time upload links (start_upload): the raw STEP in the body becomes a component.
+    const up = path.match(/^\/api\/up\/([\w-]+)\/(\w+)$/)
+    if (up && (req.method === 'PUT' || req.method === 'POST')) {
+      const [, uid, id] = up
+      const q = new URL(req.url).searchParams
+      if (!(await checkUpload(directory, uid, id, q.get('e') ?? '', q.get('s') ?? ''))) return new Response('This upload link expired or is wrong.\n', { status: 403 })
+      const size = Number(req.headers.get('content-length') ?? 0)
+      if (!size || !req.body) return new Response('Send the file as the request body (curl -T file.step URL); the body was empty or had no length.\n', { status: 400 })
+      if (size > MAX_COMPONENT) return new Response('Files up to 95 MB.\n', { status: 413 })
+      const account = accountOf(env, uid)
+      const meta = (await account.takeUpload(id)) as { name?: string; file?: string; id?: string; vendor?: string; part_number?: string; link?: string; notes?: string } | null
+      if (!meta) return new Response('This upload link was already used or expired; ask for a new one with start_upload.\n', { status: 410 })
+      const key = `users/${uid}/components/uploads/${id}.step`
+      await env.FILES.put(key, req.body, { httpMetadata: { contentType: 'model/step' } })
+      try {
+        const api = account as unknown as ComponentToolApi
+        const r = await importComponent(env, uid, api, { via: 'upload', name: meta.file ?? 'component.step', key }, { id: meta.id, name: meta.name, vendor: meta.vendor, partNumber: meta.part_number, link: meta.link, notes: meta.notes })
+        if (!r.ok) return new Response(`Couldn't import it: ${r.why}.\n`, { status: 422 })
+        return new Response(`Imported as component ${r.doc.id} in ${(r.ms / 1000).toFixed(1)} s (${(size / 1024 ** 2).toFixed(1)} MB). Call read_component to see its datums and render.\n${describeComponent(r.doc)}\n`)
+      } finally {
+        await env.FILES.delete(key)
+      }
     }
 
     // The browser has a session cookie; agents send their email and password with every request.
@@ -311,6 +349,35 @@ export default {
       return item ? json(item) : json({ error: 'no such file' }, 404)
     }
     if (libraryItem && req.method === 'DELETE') return (await account.removeLibraryItem(libraryItem[1])) ? json({ ok: true }) : json({ error: 'no such file' }, 404)
+
+    // ------------------------------------------------------------ components (vendor STEP models)
+    if (path === '/api/components' && req.method === 'GET') return json(await account.listComponents())
+    if (path === '/api/components' && req.method === 'POST') {
+      const body = ComponentAdd.safeParse(await req.json().catch(() => null))
+      if (!body.success) return json({ error: body.error.issues[0]?.message ?? 'invalid component' }, 400)
+      const b = body.data
+      if (!b.key.startsWith(`users/${user.id}/uploads/`)) return json({ error: 'unknown file' }, 403)
+      const r = await importComponent(env, user.id, account as unknown as ComponentToolApi, { via: 'upload', name: b.file ?? b.name ?? 'component.step', key: b.key }, { id: b.id, name: b.name, vendor: b.vendor, partNumber: b.part_number, link: b.link, notes: b.notes })
+      return r.ok ? json(r.doc) : json({ error: `Couldn't import it: ${r.why}.` }, 422)
+    }
+    const component = path.match(/^\/api\/components\/([a-z0-9][a-z0-9-]{0,40})$/)
+    if (component && req.method === 'GET') {
+      const doc = await account.component(component[1])
+      return doc ? json(doc) : json({ error: 'no such component' }, 404)
+    }
+    if (component && req.method === 'PATCH') {
+      const doc = await account.component(component[1])
+      if (!doc) return json({ error: 'no such component' }, 404)
+      const patch = SetComponentDatums.omit({ component: true }).safeParse(await req.json().catch(() => null))
+      if (!patch.success) return json({ error: patch.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') }, 400)
+      return json(await account.saveComponent(patchComponent(doc as unknown as Parameters<typeof patchComponent>[0], patch.data)))
+    }
+    if (component && req.method === 'DELETE') {
+      if (!(await account.removeComponent(component[1]))) return json({ error: 'no such component' }, 404)
+      const page = await env.FILES.list({ prefix: `${componentDir(user.id, component[1])}/` })
+      if (page.objects.length) await env.FILES.delete(page.objects.map((o) => o.key))
+      return json({ ok: true })
+    }
 
     // ------------------------------------------------------------ memory
     if (path === '/api/memory' && req.method === 'GET') return json(await account.memories())

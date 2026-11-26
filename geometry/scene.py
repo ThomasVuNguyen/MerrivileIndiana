@@ -33,7 +33,7 @@ def render_scene(value, colors: dict[str, str], views: list | None, size: int, s
                 continue
         if not (shape.faces() or shape.edges()):
             continue
-        mesh = tessellate(shape)
+        mesh = tessellate(shape, info=False)
         if cut:
             mask = _cut_mask(shape, mesh, cut)
         meshes.append((mesh["_arrays"], rgb, mask))
@@ -192,3 +192,48 @@ def _rgb(hex_color: str) -> tuple:
 
 def _far(a, b) -> bool:
     return float(np.abs(np.array(a) - np.array(b)).sum()) > 60
+
+
+CLASH_RGB = (230.0, 20.0, 20.0)
+
+
+def render_assembly(items: list, overlay: list, views: list | None, size: int, section: dict | None = None) -> tuple[bytes | None, bytes | None]:
+    """A sheet of a placed assembly, each instance in its colour, clash volumes red over everything.
+
+    items are {name, color "#rrggbb", shape (placed), matrix (4x4), arrays (the unplaced shape's mesh)}:
+    without a section the unplaced mesh is moved, so a big vendor model is tessellated once.
+    Returns (sheet, thumbnail).
+    """
+    from geometry.render import merge, render_thumb, render_views
+
+    cut = _plane([i["shape"] for i in items], section) if section else None
+    meshes, legend = [], []
+    for it in items:
+        rgb = _rgb(it["color"])
+        if cut:
+            shape = _split(it["shape"], cut)
+            if shape is None or not (shape.faces() or shape.edges()):
+                continue
+            mesh = tessellate(shape, info=False)
+            meshes.append((mesh["_arrays"], rgb, _cut_mask(shape, mesh, cut)))
+        else:
+            a, m = it["arrays"], it["matrix"]
+            R, t = m[:3, :3], m[:3, 3]
+            meshes.append(({"positions": a["positions"].astype(np.float64) @ R.T + t, "indices": a["indices"], "edges": a["edges"].astype(np.float64) @ R.T + t}, rgb, None))
+        if (it["name"], rgb) not in legend:
+            legend.append((it["name"], rgb))
+    for shape in overlay:
+        if cut:
+            shape = _split(shape, cut)
+            if shape is None or not shape.faces():
+                continue
+        mesh = tessellate(shape, info=False)
+        meshes.append((mesh["_arrays"], CLASH_RGB, None, True))
+    if overlay:
+        legend.append(("clash", CLASH_RGB))
+    if not meshes:
+        return None, None
+    if views is None and cut:
+        views = _section_views(cut)
+    merged = {"_arrays": merge(meshes)}
+    return render_views(merged, views, size, legend), (render_thumb(merged) if not cut else None)
