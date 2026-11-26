@@ -94,7 +94,8 @@ render images are never sent.
 
 `POST /api/mcp` is an MCP server (Streamable HTTP, JSON responses; `worker/mcp.ts`) so agents
 such as Claude Code can do what the in-app AI does. They sign in on every request with
-`Authorization: Bearer <email>:<password>` (Basic auth works too), the same account as the web app.
+`Authorization: Bearer <email>:<password>` (Basic auth works too) or `X-API-Key: <email>:<password>`
+(for claude.ai connectors: "No sign-in" plus that header), the same account as the web app.
 
 - Projects: `list_projects`, `create_project`, `rename_project`, `delete_project` (needs the exact name).
 - Parts: `list_parts`, `read_part` (any version), `write_part`, `edit_part`, `restore_part_version`,

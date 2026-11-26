@@ -117,9 +117,12 @@ export function sessionCookie(req: Request, token: string, maxAge: number) {
   return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`
 }
 
-/** Agents send `Authorization: Bearer email:password` (or Basic) instead of a session cookie. */
+/**
+ * Agents send `Authorization: Bearer email:password` (or Basic) instead of a session cookie, or
+ * `X-API-Key: email:password` where the client keeps Authorization for itself (claude.ai connectors).
+ */
 export function headerCredentials(req: Request): { email: string; password: string } | null {
-  const [scheme, value] = (req.headers.get('authorization') ?? '').split(/\s+/, 2)
+  const [scheme, value] = req.headers.has('x-api-key') ? ['bearer', req.headers.get('x-api-key')!.trim()] : (req.headers.get('authorization') ?? '').split(/\s+/, 2)
   if (!value) return null
   let pair = value
   if (/^basic$/i.test(scheme)) {
