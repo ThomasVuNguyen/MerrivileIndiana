@@ -28,7 +28,10 @@ export const SYSTEM = `You are the modeling engine of Merrivile, a CAD app where
 - Put the design parameters at the top as UPPER_CASE constants with units in comments, so later edits are one-line changes.
 - Assign the finished solid to a variable named \`result\`.
 - Use algebra mode: Box, Cylinder, Cone, Sphere, Torus, extrude, revolve, loft, sweep, fillet, chamfer, with Pos(), Rot() and Location placement and +, -, & booleans. Sketches: Rectangle, Circle, RegularPolygon, Polyline, make_face, offset.
-- Imports allowed: build123d, bd_warehouse, math, numpy. No file, network or subprocess access.
+- \`from build123d import *\` is already done (importing it again is fine). Other imports allowed: bd_warehouse, math, numpy. No file, network or subprocess access.
+- part("id") is another part of this project as an exact solid, rebuilt from the source of its last good version; it works the same in part scripts and in inspect. Use it to fit a part around another, e.g. result = Box(40, 40, 12) - Pos(0, 0, 4) * part("lens-cell"). A part can't use itself, directly or through other parts.
+- When a part gets a new version, the parts that use it are not rebuilt: the build report and read_part mark them out of date until you rebuild each one with edit_part and edits: [].
+- Separate solids on purpose (a print plate, a set printed together): pass bodies with the count, so the build checks for that many instead of warning.
 - Model each part at its own origin: a sensible datum (mounting face on Z=0, axis of rotation on Z) so assemblies can place it later.
 
 # build123d 0.13 notes
@@ -48,12 +51,17 @@ const NOTE = { type: 'string', description: 'One line on what changed, shown in 
 const ID = { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,40}$', description: 'Stable kebab-case id, e.g. "motor-bracket".' }
 const MATERIAL = { type: 'string', enum: Object.keys(MATERIALS), description: 'Material, used for mass.' }
 const COLOR = { type: 'string', pattern: '^#[0-9a-fA-F]{6}$', description: 'Display color as #rrggbb.' }
+const BODIES = {
+  type: 'integer',
+  minimum: 1,
+  description: 'How many separate solids `result` holds on purpose, for a print plate or a set printed together; the build warns only when the count differs. Kept for later edits. Default one.',
+}
 
 export const TOOLS: ToolSpec[] = [
   {
     name: 'write_part',
     description:
-      'Create a new part, or replace the whole build123d source of an existing one, then build it. Use it for new parts and for rewrites; prefer edit_part for small changes. Returns metrics, warnings and a 4-view render, or the error with the failing line. A successful build replaces the part in the viewer.',
+      'Create a new part, or replace the whole build123d source of an existing one, then build it. Use it for new parts and for rewrites; prefer edit_part for small changes. Returns metrics, warnings and a 4-view render, or the error with the failing line. A successful build replaces the part in the viewer; a failed one saves nothing. For several separate solids on purpose (a print plate or a set printed together), pass bodies.',
     schema: {
       type: 'object',
       properties: {
@@ -63,6 +71,7 @@ export const TOOLS: ToolSpec[] = [
         material: MATERIAL,
         color: COLOR,
         note: NOTE,
+        bodies: BODIES,
       },
       required: ['id', 'name', 'source'],
       additionalProperties: false,
@@ -71,7 +80,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: 'edit_part',
     description:
-      "Change an existing part by exact string replacement in its source, then rebuild. Each old_str must appear exactly once in the current source. Use it for dimension tweaks and local changes. Returns the same build report as write_part. Also changes the part's name, material or color when given.",
+      "Change an existing part by exact string replacement in its source, then rebuild. Each old_str must appear exactly once in the current source. Use it for dimension tweaks and local changes. Returns the same build report as write_part; a failed build leaves the part at its last good version. With edits: [] it rebuilds the current source, e.g. when a part it uses changed. Also changes the part's name, material, color or bodies when given.",
     schema: {
       type: 'object',
       properties: {
@@ -90,6 +99,7 @@ export const TOOLS: ToolSpec[] = [
         material: MATERIAL,
         color: COLOR,
         note: NOTE,
+        bodies: BODIES,
       },
       required: ['id', 'edits'],
       additionalProperties: false,

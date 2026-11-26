@@ -56,6 +56,12 @@ export type PartDoc = {
   files?: { mesh: string; step: string; stl: string; render: string; thumb: string }
   /** Files the source reads with asset(name), such as an imported STEP. */
   assets?: string[]
+  /** Parts the source uses with part("id"). */
+  uses?: string[]
+  /** Parts it uses that got a newer version after this one was built; a rebuild clears it. */
+  stale?: { part: string; version: number }[]
+  /** Separate solids `result` is meant to hold (a print plate); unset means one. */
+  bodies?: number
   /** Hardware the part uses and the tools it needs, set by the AI. */
   hardware?: PartHardware[]
   madeWith?: string[]

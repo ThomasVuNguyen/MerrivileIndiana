@@ -1,7 +1,8 @@
 """Runs one AI-written build123d script in a child process and collects the results.
 
-`build` makes a part (metrics, mesh, STEP/STL, renders). `inspect` runs analysis code that can load
-the project's parts with part(id), prints measurements, and renders whatever it assigns to `result`.
+`build` makes a part (metrics, mesh, STEP/STL, renders). `inspect` runs analysis code, prints
+measurements, and renders whatever it assigns to `result`. Both run in the same namespace: build123d
+pre-imported, asset(name) for files sent alongside, and part(id) for the project's other parts.
 
 Children are forked from a forkserver that has already imported build123d, so a
 build starts in milliseconds instead of paying the ~3 s import every time. Each
@@ -35,12 +36,25 @@ def _context() -> mp.context.BaseContext:
 _ctx = _context()
 
 
-def build(source: str, timeout: float = 60.0, assets: dict[str, bytes] | None = None) -> dict:
+class PartError(RuntimeError):
+    """part(id) couldn't give a solid: no such part, a cycle, or its source failed."""
+
+
+def build(
+    source: str,
+    timeout: float = 60.0,
+    assets: dict[str, bytes] | None = None,
+    parts: dict[str, str] | None = None,
+    part_id: str | None = None,
+    bodies: int | None = None,
+) -> dict:
     """Execute `source` and return metrics, mesh, STEP/STL and a render, or an error.
 
-    `assets` are files the script can open with asset(name), such as an imported STEP.
+    `assets` are files the script can open with asset(name), such as an imported STEP; `parts` are the
+    project's other parts for part(id). `part_id` is the part being built, so it can't use itself.
+    `bodies` is how many separate solids `result` is meant to hold (a print plate); None means one.
     """
-    return _spawn(_job, (source, assets or {}), timeout)
+    return _spawn(_job, (source, assets or {}, parts or {}, part_id, bodies), timeout)
 
 
 def inspect(
@@ -87,30 +101,33 @@ def _spawn(target, args: tuple, timeout: float) -> dict:
     return result
 
 
-def _job(source: str, assets: dict[str, bytes], conn) -> None:
+def _job(source: str, assets: dict[str, bytes], parts: dict[str, str], part_id: str | None, bodies: int | None, conn) -> None:
     resource.setrlimit(resource.RLIMIT_AS, (MEMORY_LIMIT, MEMORY_LIMIT))
     out = io.StringIO()
     try:
-        conn.send(_run(source, out, assets))
+        conn.send(_run(source, out, assets, parts, part_id, bodies))
     except BaseException as exc:  # anything the script raises, including SystemExit
         conn.send({"ok": False, "error": _describe(exc, source), "stdout": out.getvalue()[-4000:]})
     finally:
         conn.close()
 
 
-def _run(source: str, out: io.StringIO, assets: dict[str, bytes]) -> dict:
+def _run(source: str, out: io.StringIO, assets: dict[str, bytes], parts: dict[str, str], part_id: str | None, bodies: int | None) -> dict:
     files = tempfile.mkdtemp(prefix="assets-")
     try:
-        return _run_in(source, out, assets, files)
+        return _run_in(source, out, _environment(assets, parts, files), part_id, bodies)
     finally:
         shutil.rmtree(files, ignore_errors=True)
 
 
-def _run_in(source: str, out: io.StringIO, assets: dict[str, bytes], files: str) -> dict:
-    from build123d import Compound, Shape, export_step, export_stl
+def _environment(assets: dict[str, bytes], parts: dict[str, str], files: str):
+    """What part scripts and inspect code run in: `from build123d import *` already done, asset(name)
+    for the files sent alongside, and part(id), a project part's solid built from its last good source.
 
-    from geometry.mesh import tessellate
-    from geometry.render import render_thumb, render_views
+    Returns namespace(name, chain): a fresh namespace whose part() knows the chain of parts being built,
+    so a part can't use itself, directly or through others. Built parts are shared across namespaces.
+    """
+    from build123d import Compound, Shape
 
     for name, data in assets.items():
         with open(os.path.join(files, os.path.basename(name)), "wb") as f:
@@ -122,17 +139,56 @@ def _run_in(source: str, out: io.StringIO, assets: dict[str, bytes], files: str)
             raise FileNotFoundError(f"No asset named {name!r}. Available: {', '.join(sorted(assets)) or 'none'}.")
         return path
 
-    namespace: dict = {"__name__": "__part__", "asset": asset}
+    loaded: dict = {}
+
+    def namespace(name: str, chain: tuple[str, ...]) -> dict:
+        def part(pid: str):
+            """A project part's current solid, built from its source."""
+            if pid in chain:
+                path = " → ".join((*chain, pid))
+                raise PartError(f"part({pid!r}) makes a cycle ({path}). A part can't use itself, directly or through other parts.")
+            if pid not in loaded:
+                if pid not in parts:
+                    raise PartError(f"No part {pid!r} with a good build in this project. Parts: {', '.join(sorted(parts)) or 'none'}.")
+                ns = namespace("__part__", (*chain, pid))
+                try:
+                    exec(compile(parts[pid], f"part {pid}", "exec"), ns)
+                    loaded[pid] = _resolve(ns.get("result"), Compound, Shape)
+                except PartError:
+                    raise
+                except Exception as exc:
+                    raise PartError(f"part({pid!r}) failed to build: {type(exc).__name__}: {exc}") from None
+            return loaded[pid]
+
+        ns: dict = {"__name__": name}
+        exec("from build123d import *", ns)
+        ns.update(asset=asset, part=part)
+        return ns
+
+    return namespace
+
+
+def _run_in(source: str, out: io.StringIO, namespace, part_id: str | None, bodies: int | None) -> dict:
+    from build123d import Compound, Shape, export_step, export_stl
+
+    from geometry.mesh import tessellate
+    from geometry.render import render_thumb, render_views
+
+    ns = namespace("__part__", (part_id,) if part_id else ())
     with contextlib.redirect_stdout(out):
-        exec(compile(source, SCRIPT, "exec"), namespace)
-    shape = _resolve(namespace.get("result"), Compound, Shape)
+        exec(compile(source, SCRIPT, "exec"), ns)
+    shape = _resolve(ns.get("result"), Compound, Shape)
     problems = []
-    if not shape.solids():
+    solids = len(shape.solids())
+    if not solids:
         raise ValueError("`result` has no solids. Parts must be closed 3D solids (extrude, revolve, loft…), not sketches or faces.")
     if not shape.is_valid:
         problems.append("OpenCASCADE reports the shape as invalid (BRepCheck). Booleans or fillets may have left bad geometry.")
-    if len(shape.solids()) > 1:
-        problems.append(f"`result` holds {len(shape.solids())} separate solids. If it's meant to be one part, fuse them or check that features touch.")
+    if bodies is not None:
+        if solids != bodies:
+            problems.append(f"`result` holds {solids} separate solid{'s' if solids != 1 else ''}; expected {bodies} (bodies={bodies}). Check that features touch, or change bodies.")
+    elif solids > 1:
+        problems.append(f"`result` holds {solids} separate solids. If it's meant to be one part, fuse them or check that features touch; if they're printed together on purpose, pass bodies={solids}.")
 
     mesh = tessellate(shape)
     png, thumb = render_views(mesh), render_thumb(mesh)
@@ -161,7 +217,7 @@ def _inspect_job(code: str, assets: dict[str, bytes], parts: dict[str, str], vie
     out = io.StringIO()
     files = tempfile.mkdtemp(prefix="assets-")
     try:
-        conn.send(_inspect_in(code, out, assets, parts, views, size, files))
+        conn.send(_inspect_in(code, out, _environment(assets, parts, files), views, size))
     except BaseException as exc:
         conn.send({"ok": False, "error": _describe(exc, code), "stdout": out.getvalue()[-20000:]})
     finally:
@@ -169,7 +225,7 @@ def _inspect_job(code: str, assets: dict[str, bytes], parts: dict[str, str], vie
         conn.close()
 
 
-def _inspect_in(code: str, out: io.StringIO, assets: dict[str, bytes], parts: dict[str, str], views, size: int, files: str) -> dict:
+def _inspect_in(code: str, out: io.StringIO, environment, views, size: int) -> dict:
     import json
 
     from build123d import Compound, Shape
@@ -177,32 +233,7 @@ def _inspect_in(code: str, out: io.StringIO, assets: dict[str, bytes], parts: di
     from geometry.mesh import tessellate
     from geometry.render import PRESETS, render_views
 
-    for name, data in assets.items():
-        with open(os.path.join(files, os.path.basename(name)), "wb") as f:
-            f.write(data)
-
-    def asset(name: str) -> str:
-        path = os.path.join(files, os.path.basename(name))
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"No asset named {name!r}. Available: {', '.join(sorted(assets)) or 'none'}.")
-        return path
-
-    loaded: dict = {}
-
-    def part(pid: str):
-        """A project part's current solid, built from its source."""
-        if pid not in loaded:
-            if pid not in parts:
-                raise KeyError(f"No part {pid!r} was loaded. Parts: {', '.join(sorted(parts)) or 'none'}.")
-            ns: dict = {"__name__": "__part__", "asset": asset}
-            try:
-                exec(compile(parts[pid], f"part {pid}", "exec"), ns)
-                loaded[pid] = _resolve(ns.get("result"), Compound, Shape)
-            except Exception as exc:
-                raise RuntimeError(f"part({pid!r}) failed to build: {type(exc).__name__}: {exc}") from None
-        return loaded[pid]
-
-    namespace: dict = {"__name__": "__inspect__", "asset": asset, "part": part}
+    namespace = environment("__inspect__", ())
     with contextlib.redirect_stdout(out):
         exec(compile(code, SCRIPT, "exec"), namespace)
     reply: dict = {"ok": True, "stdout": out.getvalue()[-20000:]}

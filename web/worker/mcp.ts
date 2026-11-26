@@ -24,8 +24,9 @@ type Reply = { content: Content[]; isError?: boolean }
 const INSTRUCTIONS = `Merrivile is a CAD app. Parts are build123d 0.13 Python scripts (OpenCASCADE B-rep) built on the server. The owner reviews them in a 3D viewer at https://merry.beenex.company; what you change shows there live, and in the project's "Outside agent (MCP)" chat.
 
 # Workflow
-- list_projects, then list_parts, then read_part before you edit a part. write_part creates or rewrites; edit_part makes exact string replacements. Every build returns metrics, warnings and a 4-view render: check the numbers first, then the picture. Fix what's wrong before calling a part done.
-- inspect is the measuring tool. It runs Python with build123d where part("id") is that part's exact solid, rebuilt from its source (no mesh, no STEP round trip). print() measurements; assign \`report\` for structured results; assign \`result\` to get its full-precision metrics and a render from the views you pick. Cut sections by intersecting with a Box or using split(). Nothing is saved. Use it for distances, radii, angles, wall thickness, concentricity, clearance and interference between parts (a & b), placing parts relative to each other with Location/Pos/Rot, and tolerance stacks.
+- list_projects, then list_parts, then read_part before you edit a part. write_part creates or rewrites; edit_part makes exact string replacements. Every build returns metrics, warnings and a 4-view render: check the numbers first, then the picture. Fix what's wrong before calling a part done. A failed build saves nothing: a new part isn't created and an existing one stays at its last good version.
+- Parts can build on each other with part("id") in their source. Changing a part marks the parts that use it out of date (build report, list_parts, read_part); rebuild each with edit_part edits: [] and check it still fits.
+- inspect is the measuring tool. It runs Python in the same environment as part scripts: build123d pre-imported, and part("id") is that part's exact solid, rebuilt from its last good source (no mesh, no STEP round trip). print() measurements; assign \`report\` for structured results; assign \`result\` to get its full-precision metrics and a render from the views you pick. Cut sections by intersecting with a Box or using split(). Nothing is saved. Use it for distances, radii, angles, wall thickness, concentricity, clearance and interference between parts (a & b), placing parts relative to each other with Location/Pos/Rot, and tolerance stacks.
 - Precision: millimetres, double precision throughout. Build reports are rounded (to 0.01 mm); inspect is not. OpenCASCADE's modelling tolerance is 1e-7 mm. Booleans and fillets can leave slivers: check is_valid and the solid count.
 - High-accuracy work (optics): put every critical dimension in an UPPER_CASE parameter with its tolerance in a comment, derive the rest from them, then measure the built solid with inspect against the intended numbers (seat diameters, bore coaxiality, distances from datum faces to optical surfaces, tilt of mounting faces). Measure the solid; don't trust the script.
 - export_part gives a download link (valid 1 h, no login needed) for STEP, STL or the render. import_step brings in vendor models (a lens, mount or sensor STEP from a URL) as parts you can build around.
@@ -65,7 +66,7 @@ function inProject(name: string, description?: string): Spec {
 }
 
 const PROJECT_TOOLS: Spec[] = [
-  { name: 'list_parts', description: 'Every part in a project: id, name, version, material, build status, bounding box, volume, mass, hardware.', inputSchema: obj({ project: PROJECT }, ['project']), annotations: READ },
+  { name: 'list_parts', description: 'Every part in a project: id, name, version, material, build status, bounding box, volume, mass, hardware, the parts it uses and whether it is out of date.', inputSchema: obj({ project: PROJECT }, ['project']), annotations: READ },
   {
     name: 'read_part',
     description: "A part's current build123d source, metrics, hardware and version list. With version, that version's source instead. Read a part before editing it.",
@@ -84,7 +85,7 @@ const PROJECT_TOOLS: Spec[] = [
   {
     name: 'inspect',
     description:
-      'Run build123d Python to measure and check geometry without saving anything. part("id") returns that part\'s exact solid (rebuilt from its source). print() what you measure; assign `report` (any JSON value) for structured output; assign `result` (a shape or list of shapes) to get its full-precision metrics and a render. Examples: hole = part("lens-cell").faces().filter_by(GeomType.CYLINDER).sort_by(SortBy.RADIUS)[-1]; print(hole.radius, hole.center()). Interference: print((part("a") & Pos(0, 0, 12) * part("b")).volume). Section: result = part("barrel") & Box(200, 0.01, 200). Without a project only plain build123d is available. Limits: 120 s by default (timeout up to 300), 3 GB of memory, no files or network.',
+      'Run build123d Python to measure and check geometry without saving anything. build123d is pre-imported and part("id") returns that part\'s exact solid (rebuilt from its last good source), as in part scripts. print() what you measure; assign `report` (any JSON value) for structured output; assign `result` (a shape or list of shapes) to get its full-precision metrics and a render. Examples: hole = part("lens-cell").faces().filter_by(GeomType.CYLINDER).sort_by(SortBy.RADIUS)[-1]; print(hole.radius, hole.center()). Interference: print((part("a") & Pos(0, 0, 12) * part("b")).volume). Section: result = part("barrel") & Box(200, 0.01, 200). Without a project only plain build123d is available. Limits: 120 s by default (timeout up to 300), 3 GB of memory, no files or network.',
     inputSchema: obj({ project: PROJECT, code: { type: 'string' }, views: VIEWS, size: SIZE, timeout: { type: 'number', minimum: 1, maximum: 300 } }, ['code']),
     annotations: READ,
   },

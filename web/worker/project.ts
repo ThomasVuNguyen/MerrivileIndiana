@@ -26,7 +26,8 @@ const Id = z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/)
 const Material = z.enum(Object.keys(MATERIALS) as [string, ...string[]])
 const Color = z.string().regex(/^#[0-9a-fA-F]{6}$/)
 const Note = z.string().max(120).optional()
-const WritePart = z.object({ id: Id, name: z.string().min(1).max(80), source: z.string().min(1), material: Material.optional(), color: Color.optional(), note: Note })
+const Bodies = z.number().int().min(1).optional()
+const WritePart = z.object({ id: Id, name: z.string().min(1).max(80), source: z.string().min(1), material: Material.optional(), color: Color.optional(), note: Note, bodies: Bodies })
 const EditPart = z.object({
   id: Id,
   edits: z.array(z.object({ old_str: z.string(), new_str: z.string() })),
@@ -34,6 +35,7 @@ const EditPart = z.object({
   material: Material.optional(),
   color: Color.optional(),
   note: Note,
+  bodies: Bodies,
 })
 const ReadPart = z.object({ id: Id })
 const Hardware = z.object({
@@ -355,11 +357,8 @@ export class Project extends DurableObject<Env> {
     await this.env.FILES.put(`projects/${this.projectId()}/assets/${asset}`, data, { httpMetadata: { contentType: 'model/step' } })
     const source = `from build123d import *\n\n# Imported from ${clean}. Build on it below; keep the import line.\nresult = import_step(asset("${asset}"))\n`
     const result = await this.build(`import-${id}`, { id, name: stem.slice(0, 80), source, assets: [asset], note: `Imported ${clean}` }, false, signal, () => {}, Date.now())
-    const part = this.part(id)!
-    if (!result.isError) return { ok: true, part }
-    this.sql.exec('DELETE FROM parts WHERE id = ?', id)
-    this.broadcast({ type: 'part_removed', id })
-    return { ok: false, why: part.error?.message.includes('no solids') ? 'no solids in it' : (part.error?.message ?? 'unknown error') }
+    if (!result.isError) return { ok: true, part: this.part(id)! }
+    return { ok: false, why: result.error?.message.includes('no solids') ? 'no solids in it' : (result.error?.message ?? 'unknown error') }
   }
 
   private async importStep(req: Request) {
@@ -449,7 +448,7 @@ export class Project extends DurableObject<Env> {
     const parts = this.parts()
     lines.push(
       parts.length
-        ? `[Parts in this project: ${parts.map((p) => `${p.id} "${p.name}" v${p.version} ${p.status === 'ok' ? 'builds' : 'has a build error'}`).join('; ')}]`
+        ? `[Parts in this project: ${parts.map((p) => `${p.id} "${p.name}" v${p.version} ${p.status === 'ok' ? 'builds' : 'has a build error'}${p.stale?.length ? ', out of date' : ''}`).join('; ')}]`
         : '[This project has no parts yet.]',
     )
     // Memory and shop go in only when they changed since this chat saw them, so history stays small.
@@ -503,15 +502,17 @@ export class Project extends DurableObject<Env> {
         return { id: call.id, content: [{ type: 'text', text: `Saved ${hardware.length} hardware lines and ${input.data.made_with?.length ?? 0} tools on ${part.id}.` }] }
       }
       if (call.name === 'write_part' || call.name === 'edit_part') {
-        let id: string, name: string | undefined, source: string, material: string | undefined, color: string | undefined, note: string | undefined
+        let id: string, name: string | undefined, source: string, material: string | undefined, color: string | undefined, note: string | undefined, bodies: number | undefined
+        let fallback = this.part(String((call.input as { id?: unknown }).id)) ? 'Rewrote the part' : 'First build'
         if (call.name === 'write_part') {
           const input = WritePart.safeParse(call.input)
           if (!input.success) return fail(invalid(call.input, input.error), 'invalid input')
-          ;({ id, name, source, material, color, note } = input.data)
+          ;({ id, name, source, material, color, note, bodies } = input.data)
         } else {
           const input = EditPart.safeParse(call.input)
           if (!input.success) return fail(invalid(call.input, input.error), 'invalid input')
-          ;({ id, name, material, color, note } = input.data)
+          ;({ id, name, material, color, note, bodies } = input.data)
+          fallback = input.data.edits.length ? 'Edited' : 'Rebuilt'
           const part = this.part(id)
           if (!part) return fail(`No part "${id}" to edit. Use write_part to create it.`, `${id} · not found`)
           source = part.source
@@ -522,8 +523,8 @@ export class Project extends DurableObject<Env> {
           }
         }
         update({ detail: `${id} · building` })
-        const fallback = call.name === 'write_part' ? (this.part(id) ? 'Rewrote the part' : 'First build') : 'Edited'
-        return await this.build(call.id, { id, name, source, material, color, note: note ?? fallback }, vision, signal, update, started)
+        const r = await this.build(call.id, { id, name, source, material, color, bodies, note: note ?? fallback }, vision, signal, update, started)
+        return { id: r.id, content: r.content, ...(r.isError && { isError: true }) }
       }
       return fail(`Unknown tool ${call.name}.`, 'unknown tool')
     } catch (err) {
@@ -533,12 +534,12 @@ export class Project extends DurableObject<Env> {
 
   private async build(
     callId: string,
-    req: { id: string; name?: string; source: string; material?: string; color?: string; assets?: string[]; note?: string },
+    req: { id: string; name?: string; source: string; material?: string; color?: string; assets?: string[]; bodies?: number; note?: string },
     withImage: boolean,
     signal: AbortSignal,
     update: (patch: Partial<CallState>) => void,
     started: number,
-  ): Promise<ToolResult> {
+  ): Promise<ToolResult & { error?: BuildError }> {
     const prev = this.part(req.id)
     const base: PartDoc = prev ?? {
       id: req.id,
@@ -561,18 +562,20 @@ export class Project extends DurableObject<Env> {
       source: req.source,
       // Any asset("name") the source mentions, e.g. another part's imported STEP.
       assets: [...new Set([...(req.assets ?? base.assets ?? []), ...[...req.source.matchAll(/asset\(\s*["']([\w.-]+)["']\s*\)/g)].map((m) => m[1])])],
+      uses: usesOf(req.source),
+      bodies: req.bodies ?? base.bodies,
       updatedAt: Date.now(),
     }
 
     let out: Build
     try {
-      // Files the script reads with asset(name), e.g. an imported STEP.
-      const assets: Record<string, string> = {}
-      for (const name of doc.assets ?? []) {
-        const obj = await this.env.FILES.get(`projects/${this.projectId()}/assets/${name}`)
-        if (obj) assets[name] = toBase64(new Uint8Array(await obj.arrayBuffer()))
-      }
-      const res = await geometryFetch(this.env, '/build', { method: 'POST', body: JSON.stringify({ source: req.source, timeout: 90, assets }), signal })
+      // Other parts' sources for part(id), and files the script reads with asset(name), e.g. an imported STEP.
+      const { parts, assets } = await this.partInputs(req.source, doc.assets)
+      const res = await geometryFetch(this.env, '/build', {
+        method: 'POST',
+        body: JSON.stringify({ id: req.id, source: req.source, timeout: 90, parts, assets, bodies: doc.bodies }),
+        signal,
+      })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       out = await res.json()
     } catch (err) {
@@ -581,11 +584,15 @@ export class Project extends DurableObject<Env> {
       return { id: callId, isError: true, content: [{ type: 'text', text: `The geometry service didn't respond (${(err as Error).message}). Nothing was built; tell the person it's down.` }] }
     }
 
+    // A failed build saves nothing: a new part isn't created, an existing one keeps its last good version.
     if (!out.ok) {
-      const failed: PartDoc = { ...doc, status: 'error', error: out.error }
-      this.savePart(failed)
+      if (prev && !prev.version) {
+        // A draft that never built, stored before failed builds stopped being saved.
+        this.sql.exec('DELETE FROM parts WHERE id = ?', req.id)
+        this.broadcast({ type: 'part_removed', id: req.id })
+      }
       update({ state: 'error', detail: `${req.id} · ${out.error.type}${out.error.line ? ` line ${out.error.line}` : ''}`, ms: Date.now() - started })
-      return { id: callId, isError: true, content: [{ type: 'text', text: formatError(req.id, out) }] }
+      return { id: callId, isError: true, content: [{ type: 'text', text: formatError(req.id, out, req.source, prev?.version) }], error: out.error }
     }
 
     const version = base.version + 1
@@ -605,15 +612,46 @@ export class Project extends DurableObject<Env> {
       error: undefined,
       metrics: out.metrics,
       files: { mesh: url('json'), step: url('step'), stl: url('stl'), render: url('png'), thumb: url('thumb.png') },
+      stale: undefined,
     }
     this.sql.exec('INSERT OR REPLACE INTO versions (part, version, source, created_at, note) VALUES (?, ?, ?, ?, ?)', req.id, version, req.source, Date.now(), req.note ?? '')
+    const stale = this.markStale(req.id, version)
     this.savePart(built)
     const m = out.metrics
     update({ state: 'done', detail: `${req.id} v${version} · ${m.faces} faces · ${(m.volume_mm3 / 1000).toFixed(1)} cm³`, ms: Date.now() - started })
 
-    const content: Block[] = [{ type: 'text', text: `Built ${req.id} v${version} in ${(out.ms / 1000).toFixed(1)} s.\n${describe(built, false)}${out.warnings.length ? `\nWarnings:\n- ${out.warnings.join('\n- ')}` : ''}${out.stdout ? `\nstdout:\n${out.stdout}` : ''}` }]
+    const content: Block[] = [
+      {
+        type: 'text',
+        text: `Built ${req.id} v${version} in ${(out.ms / 1000).toFixed(1)} s.\n${describe(built, false)}${out.warnings.length ? `\nWarnings:\n- ${out.warnings.join('\n- ')}` : ''}${stale.length ? `\nOut of date now:\n- ${stale.join('\n- ')}` : ''}${out.stdout ? `\nstdout:\n${out.stdout}` : ''}`,
+      },
+    ]
     if (withImage) content.push({ type: 'image', mediaType: 'image/png', data: out.render })
     return { id: callId, content }
+  }
+
+  /**
+   * `id` has a new version: the parts that use it, directly or through others, are now out of date.
+   * They aren't rebuilt (that could break them unseen); each gets a note until its next good build.
+   */
+  private markStale(id: string, version: number): string[] {
+    const parts = this.parts()
+    const done = new Set([id])
+    const lines: string[] = []
+    for (let changed = [id]; changed.length; ) {
+      const next: string[] = []
+      for (const p of parts) {
+        const via = p.uses?.filter((u) => changed.includes(u)) ?? []
+        if (done.has(p.id) || !via.length) continue
+        done.add(p.id)
+        next.push(p.id)
+        // Quietly: the viewer follows parts that are broadcast, and nothing it shows changed.
+        this.savePart({ ...p, stale: [...(p.stale ?? []).filter((s) => s.part !== id), { part: id, version }] }, false)
+        lines.push(`${p.id} uses ${id}${via.includes(id) ? '' : ` through ${via.join(', ')}`} and is now out of date; rebuild it with edit_part edits: []`)
+      }
+      changed = next
+    }
+    return lines
   }
 
   // ---------------------------------------------------------------- outside agents (MCP)
@@ -735,7 +773,7 @@ export class Project extends DurableObject<Env> {
         log.entry.calls.push(state)
         this.toThread({ type: 'call', index: log.index, call: state }, log.thread)
         const started = Date.now()
-        const r = await runInspect(this.env, { code, views: input.views as View[] | undefined, size: input.size as number | undefined, timeout: input.timeout as number | undefined, ...(await this.inspectInputs(code)) }, signal)
+        const r = await runInspect(this.env, { code, views: input.views as View[] | undefined, size: input.size as number | undefined, timeout: input.timeout as number | undefined, ...(await this.partInputs(code)) }, signal)
         Object.assign(state, { state: r.isError ? 'error' : 'done', detail: name === 'inspect' ? r.summary : `${id} · ${r.summary}`, ms: Date.now() - started })
         finish()
         return { content: r.content as AgentReply['content'], isError: r.isError }
@@ -759,15 +797,27 @@ export class Project extends DurableObject<Env> {
     await this.ctx.storage.deleteAll()
   }
 
-  /** Each part's last good source for part(id), and the assets of the parts the code names. */
-  private async inspectInputs(code: string) {
+  /**
+   * For a part script or inspect code: each part's last good source for part(id), and the assets the
+   * code reads, plus those of the parts it names and of the parts their sources name in turn.
+   */
+  private async partInputs(code: string, own: string[] = []) {
     const parts: Record<string, string> = {}
-    const named = new Set<string>([...code.matchAll(/asset\(\s*["']([\w.-]+)["']\s*\)/g)].map((m) => m[1]))
-    for (const p of this.parts()) {
+    const all = this.parts()
+    for (const p of all) {
       const row = this.sql.exec<{ source: string }>('SELECT source FROM versions WHERE part = ? AND version = ?', p.id, p.version).toArray()[0]
-      if (!row) continue
-      parts[p.id] = row.source
-      if (code.includes(`"${p.id}"`) || code.includes(`'${p.id}'`)) for (const a of p.assets ?? []) named.add(a)
+      if (row) parts[p.id] = row.source
+    }
+    const named = new Set<string>([...own, ...[...code.matchAll(/asset\(\s*["']([\w.-]+)["']\s*\)/g)].map((m) => m[1])])
+    const seen = new Set<string>()
+    for (const queue = [code]; queue.length; ) {
+      const text = queue.pop()!
+      for (const p of all) {
+        if (seen.has(p.id) || !(text.includes(`"${p.id}"`) || text.includes(`'${p.id}'`))) continue
+        seen.add(p.id)
+        for (const a of p.assets ?? []) named.add(a)
+        if (parts[p.id]) queue.push(parts[p.id])
+      }
     }
     const assets: Record<string, string> = {}
     for (const name of named) {
@@ -809,14 +859,14 @@ export class Project extends DurableObject<Env> {
     return row ? JSON.parse(row.doc) : null
   }
 
-  private savePart(part: PartDoc) {
+  private savePart(part: PartDoc, broadcast = true) {
     const versions = this.sql
       .exec<{ version: number; note: string; created_at: number }>('SELECT version, note, created_at FROM versions WHERE part = ? ORDER BY version DESC LIMIT 12', part.id)
       .toArray()
       .map((v) => ({ version: v.version, note: v.note, at: v.created_at }))
     const doc = { ...part, versions }
     this.sql.exec('INSERT OR REPLACE INTO parts VALUES (?, ?)', part.id, JSON.stringify(doc))
-    this.broadcast({ type: 'part', part: doc })
+    if (broadcast) this.broadcast({ type: 'part', part: doc })
   }
 
   private pushChat(entry: ChatEntry) {
@@ -875,6 +925,10 @@ function describe(p: PartDoc, withSource = true) {
     )
   }
   if (p.status === 'error' && p.error) lines.push(`last error: ${p.error.type}: ${p.error.message}`)
+  if (p.bodies) lines.push(`bodies: ${p.bodies} (separate solids on purpose)`)
+  if (p.uses?.length) lines.push(`uses: ${p.uses.join(', ')}`)
+  if (p.stale?.length)
+    lines.push(`OUT OF DATE: ${p.stale.map((s) => `${s.part} is now v${s.version}`).join(', ')}, newer than this build; rebuild it with edit_part edits: []`)
   // What it's bolted together with and how it's made, so the AI doesn't say "no hardware listed".
   if (p.hardware?.length) lines.push(`hardware: ${p.hardware.map((h) => `${h.qty}× ${h.name}${h.kind && !h.name.toLowerCase().includes(h.kind.toLowerCase()) ? ` ${h.kind}` : ''} (${h.tier}${h.itemId ? `, shop ${h.itemId}` : ''})`).join('; ')}`)
   else lines.push('hardware: none listed yet')
@@ -883,10 +937,17 @@ function describe(p: PartDoc, withSource = true) {
   return lines.join('\n')
 }
 
-function formatError(id: string, out: Extract<Build, { ok: false }>) {
+function formatError(id: string, out: Extract<Build, { ok: false }>, source: string, version?: number) {
   const e = out.error
   const trace = e.trace.map((t) => `  line ${t.line}: ${t.code}`).join('\n')
-  return `Build of ${id} failed. The part keeps its last good version; the failing source is saved as the current draft.\n${e.type}: ${e.message}${trace ? `\n${trace}` : ''}${out.stdout ? `\nstdout:\n${out.stdout}` : ''}`
+  const kept = version ? `${id} is unchanged at v${version}, its last good build` : `${id} was not created`
+  return `Build of ${id} failed; nothing was saved (${kept}).\n${e.type}: ${e.message}${trace ? `\n${trace}` : ''}${out.stdout ? `\nstdout:\n${out.stdout}` : ''}\nThe source that failed:\n\`\`\`python\n${source}\n\`\`\``
+}
+
+/** Parts a source uses with part("id"). */
+function usesOf(source: string) {
+  const ids = [...new Set([...source.matchAll(/\bpart\(\s*["']([a-z0-9][a-z0-9-]{0,40})["']\s*\)/g)].map((m) => m[1]))]
+  return ids.length ? ids : undefined
 }
 
 function invalid(input: unknown, error: z.ZodError) {

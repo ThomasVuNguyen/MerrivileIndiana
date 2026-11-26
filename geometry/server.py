@@ -4,7 +4,8 @@ crops a picture for the shop; POST /image/preview makes a JPEG preview (HEIC too
 POST /video/frames and /video/copy read a video sent as the raw body; POST /convert turns a
 spreadsheet or document (raw body) into text; POST /python runs AI-written Python over files.
 
-The script gets asset(name) for files sent alongside it (an imported STEP).
+The script gets asset(name) for files sent alongside it (an imported STEP) and part(id) for the
+project's other parts, sent as their sources.
 
 Locally the Worker calls this over HTTP; on Cloudflare the same process runs
 inside a Container next to the project's Durable Object.
@@ -29,7 +30,7 @@ from geometry import images, office, runner, sandbox, video
 MAX_BODY = 64 * 1024 * 1024
 MAX_VIDEO = 5 * 1024**3
 # Reported by /health so a deploy can check the container runs the new image.
-VERSION = "2026-11-25.inspect"
+VERSION = "2026-11-26.parts"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -59,11 +60,14 @@ class Handler(BaseHTTPRequestHandler):
             source = body["source"]
             timeout = float(body.get("timeout", 60))
             assets = {str(k): base64.b64decode(v) for k, v in (body.get("assets") or {}).items()}
+            parts = {str(k): str(v) for k, v in (body.get("parts") or {}).items()}
+            part_id = str(body["id"]) if body.get("id") else None
+            bodies = max(int(body["bodies"]), 1) if body.get("bodies") is not None else None
         except (ValueError, KeyError, TypeError, AttributeError):
-            return self._json(400, {"error": "expected JSON {source, timeout?, assets?}"})
+            return self._json(400, {"error": "expected JSON {source, id?, parts?, assets?, bodies?, timeout?}"})
         if not isinstance(source, str):
             return self._json(400, {"error": "source must be a string"})
-        self._json(200, runner.build(source, min(max(timeout, 1.0), 300.0), assets))
+        self._json(200, runner.build(source, min(max(timeout, 1.0), 300.0), assets, parts, part_id, bodies))
 
     def _inspect(self) -> None:
         length = int(self.headers.get("Content-Length") or 0)
