@@ -120,6 +120,7 @@ export class Project extends DurableObject<Env> {
         type: 'snapshot',
         project: info,
         parts: this.parts(),
+        assemblies: [],
         chat: this.threads.entries(thread),
         running: !!this.abort,
         threads: this.threads.list(),
