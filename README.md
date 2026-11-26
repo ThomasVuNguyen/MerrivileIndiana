@@ -100,6 +100,10 @@ such as Claude Code can do what the in-app AI does. They sign in on every reques
 - Projects: `list_projects`, `create_project`, `rename_project`, `delete_project` (needs the exact name).
 - Parts: `list_parts`, `read_part` (any version), `write_part`, `edit_part`, `restore_part_version`,
   `delete_part`, `set_part_hardware`, `import_step` (URL, text or base64), `read_chats`.
+- Components (account-wide): `import_component`, `start_upload`, `list_components`, `read_component`,
+  `set_component_datums`. Assemblies (per project): `write_assembly`, `place`, `remove_instances`,
+  `read_assembly`, `list_assemblies`, `check_assembly`, `render_assembly`, `export_assembly`,
+  `duplicate_assembly`, `swap_component`. See "Assemblies and components" below.
 - Review: `inspect` runs build123d code where `part("id")` rebuilds a part from source (exact B-rep),
   prints measurements, returns `report` and full-precision metrics and renders of `result` from any
   view (`/inspect` in the geometry service). A list or `{name: shape}` result draws each part in its
@@ -112,6 +116,47 @@ such as Claude Code can do what the in-app AI does. They sign in on every reques
 
 What an agent changes appears live in the viewer and in the project's "Outside agent (MCP)" chat,
 whose history tells the in-app AI what changed. Each call is traced in Langfuse (tag `mcp`).
+
+## Assemblies and components
+
+No constraint solver: the AI places things by snapping named datums together, and every save
+checks the result. The in-app AI and outside agents (MCP) have the same tools.
+
+- **Datums.** A part script publishes them next to `result`: `datums = {"seat": Plane(...),
+  "optical_axis": Axis(...), "m2_holes": [Vector(...), ...]}` (a list of points is a hole pattern;
+  `Pattern(points, normal)` gives its normal). Kinds: plane (origin, normal out of the material, x
+  direction: a full frame), axis, point, pattern. They're stored per part version (`PartDoc.datums`,
+  `versions.datums`); a plane in no flat face or a pattern point on no hole axis is a warning.
+- **Components** are vendor STEP models in the account's library (`Account` object, files in R2
+  under `users/<uid>/components/<id>/`: the original STEP, a BREP, a viewer mesh in the parts'
+  format, renders). Import from a URL, STEP text, base64, a Library item, a chat attachment, or a
+  one-time signed upload link (`start_upload`, then `curl -T file.step <link>`; up to 95 MB). The
+  geometry service (`POST /component`) suggests datums: the largest flat face (`base`), hole
+  patterns in its plane grouped by diameter (`holes_d2.7`) and bores; they start as the component's
+  datums, and `set_component_datums` edits them, the keep-outs (box, cylinder, cone in the
+  component's frame) and the outline. `component("id")` works in part scripts and inspect.
+  The geometry service caches BREPs by hash (`geometry/cache.py`); a call naming one it lacks
+  answers `{need: [hash]}` and the Worker uploads it from R2 (`POST /cache/<hash>`).
+- **Assemblies** (`worker/assemblies.ts`, `geometry/assembly.py`) are instances of parts (latest
+  good version unless pinned), components and other assemblies, each placed by `pos`/`rot`
+  (build123d `Pos * Rot`) or by one or two snaps `{own, to: "<instance>.<datum>", offset?, flip?,
+  spin?}`: plane to plane (face to face), axis to axis (coaxial), point to point, pattern to pattern
+  (Kabsch, residual per point). Inside a sub-assembly: `"<sub>/<child>.<datum>"`. Instances are
+  placed in dependency order on every save; a cycle is an error; a snap that can't be met keeps the
+  instance's last placement and is reported. Matrices are 4x4 row-major (`p = M · [x, y, z, 1]`).
+- **Checks** (`geometry/check.py`) run on every save and with `check_assembly`: per-solid box
+  prefilter, then exact OpenCASCADE distance and common volume. Clashes (volume, centroid, box and a
+  red mesh), tight gaps under the clearance (0.2 mm default), contacts, floating instances (not
+  connected to the ground), keep-out intrusions, pattern fits over 0.05 mm, unresolved snaps and
+  declared requirements (`coaxial`, `parallel`, `distance`; default 0.02 mm and 0.05°). Warnings
+  only. A time limit (30 s default) returns partial results.
+- **Viewer data** (`shared/protocol.ts`): `AssemblyDoc.leaves` lists every part and component
+  instance to draw (sub-assemblies flattened) with its mesh URL, matrix and colour; the project
+  snapshot has `assemblies`, and `{type: 'assembly'}` / `{type: 'assembly_removed'}` follow changes.
+  HTTP: `GET/POST /api/components`, `GET/PATCH/DELETE /api/components/:id`; component files are
+  served to their owner under `/api/files/users/<uid>/components/`.
+- Changing a part marks the assemblies that use it out of date; `place` with `instances: []`
+  re-places and re-checks one. `export_assembly` gives a STEP with named, nested instances.
 
 ## Concept demo
 

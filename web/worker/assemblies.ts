@@ -5,7 +5,7 @@
 // what it needs; the in-app AI and outside agents (MCP) call the same tools.
 
 import type { AssemblyDoc, AssemblyInstance, AssemblyLeaf, CheckReport, Datum, Finding, FindingKind, InstanceSpec, PartDoc, Requirement, ServerEvent, SnapResult } from '../shared/protocol'
-import { geometryJson } from './components'
+import { geometryJson, keepOutput } from './components'
 import type { ComponentRef } from './components'
 import type { Env } from './env'
 import type { Block } from './llm'
@@ -30,7 +30,7 @@ export type AssemblyHost = {
 }
 
 /** A tool's outcome: what the caller sees, a line for the chat, a fact for the in-app AI's history. */
-export type AssemblyOutcome = { content: Block[]; isError?: boolean; detail: string; render?: string; line?: string; fact?: string }
+export type AssemblyOutcome = { content: Block[]; isError?: boolean; detail: string; render?: string; line?: string; fact?: string; file?: string }
 
 type GeoFinding = Omit<Finding, 'mesh'> & { mesh?: number }
 type GeoOut =
@@ -169,6 +169,66 @@ export class Assemblies {
         render: key,
       }
     }
+    if (name === 'duplicate_assembly') {
+      const f = parse(T.DuplicateAssembly) as { assembly: string; id: string; name: string } | null
+      if (!f) return bad(T.DuplicateAssembly)
+      const doc = this.get(f.assembly)
+      if (!doc) return fail(this.missing(f.assembly), `${f.assembly} · not found`)
+      if (this.get(f.id)) return fail(`There's already an assembly "${f.id}"; pick another id.`, `${f.id} · exists`)
+      return this.save(f.id, { ...specOf(doc), name: f.name }, `Copy of ${doc.id} v${doc.version}`, {}, signal, withImage)
+    }
+    if (name === 'swap_component') {
+      const f = parse(T.SwapComponent) as { assembly: string; instance: string; component: string; name?: string; note?: string } | null
+      if (!f) return bad(T.SwapComponent)
+      const doc = this.get(f.assembly)
+      if (!doc) return fail(this.missing(f.assembly), `${f.assembly} · not found`)
+      const inst = doc.instances.find((i) => i.id === f.instance)
+      if (!inst) return fail(`${doc.id} has no instance ${f.instance}. Instances: ${doc.instances.map((i) => i.id).join(', ')}.`, 'no such instance')
+      if (!('component' in inst.ref)) return fail(`${f.instance} is ${refLabel(inst.ref)}, not a component; change it with place.`, 'not a component')
+      const [next] = await this.h.componentRefs([f.component])
+      if (!next) return fail(`No component "${f.component}". Import it with import_component first.`, `${f.component} · not found`)
+      const old = inst.ref.component
+      if (old === next.id) return fail(`${f.instance} already is ${old}.`, 'same component')
+      // What the swap breaks: datums its own snaps use and datums other instances snap to, by name.
+      const lost: string[] = []
+      for (const s of asArray(inst.snap)) if (!next.datums[s.own]) lost.push(`its snap uses ${s.own}, which ${next.id} doesn't have`)
+      for (const other of doc.instances)
+        for (const s of asArray(other.snap)) {
+          const [path, datum] = [s.to.slice(0, s.to.indexOf('.')), s.to.slice(s.to.indexOf('.') + 1)]
+          if (path === inst.id && !next.datums[datum]) lost.push(`${other.id} snaps to ${s.to}, which ${next.id} doesn't have`)
+        }
+      for (const r of doc.requirements)
+        for (const a of [r.a, r.b]) if (a.slice(0, a.indexOf('.')) === inst.id && !next.datums[a.slice(a.indexOf('.') + 1)]) lost.push(`requirement ${r.name ?? r.kind} uses ${a}, which ${next.id} doesn't have`)
+      const spec = specOf(doc)
+      spec.instances = spec.instances.map((i) => (i.id === inst.id ? { ...i, ref: { component: next.id }, name: f.name ?? next.name } : i))
+      const r = await this.save(doc.id, spec, f.note ?? `Swapped ${inst.id}: ${old} → ${next.id}`, {}, signal, withImage)
+      if (r.isError) return r
+      const after = this.get(doc.id)!
+      const involved = (after.report?.findings ?? []).filter((x) => x.severity === 'warning' && x.instances.some((p) => p === inst.id || p.startsWith(`${inst.id}/`)))
+      const summary = [
+        `Swapped ${inst.id} from ${old} to ${next.id}.`,
+        lost.length || involved.length ? 'What no longer fits:' : 'Everything still fits: every datum it used exists on the new component and the check found nothing new involving it.',
+        ...lost.map((l) => `- ${l}`),
+        ...involved.filter((x) => x.kind !== 'unresolved' || !lost.length).map((x) => `- ${x.kind}: ${x.message}`),
+      ].join('\n')
+      return { ...r, content: [{ type: 'text', text: summary }, ...r.content], detail: `${inst.id} → ${next.id}${lost.length + involved.length ? ` · ${lost.length + involved.length} problems` : ''}` }
+    }
+    if (name === 'export_assembly') {
+      const f = parse(T.ExportAssembly) as { assembly: string; version?: number } | null
+      if (!f) return bad(T.ExportAssembly)
+      const doc = this.get(f.assembly)
+      if (!doc) return fail(this.missing(f.assembly), `${f.assembly} · not found`)
+      if (f.version && f.version !== doc.version) return fail(`Only the current version (v${doc.version}) exports; its placements are the ones stored.`, 'old version')
+      const key = `projects/${this.h.projectId()}/assemblies/${doc.id}/v${doc.version}.step`
+      if (!(await this.h.env.FILES.head(key))) {
+        const groups = Object.fromEntries(doc.instances.filter((i) => 'assembly' in i.ref).map((i) => [i.id, i.name]))
+        const out = await this.geometry(doc, { leaves: doc.leaves.map((l) => ({ path: l.path, name: l.name, key: keyOfRef(l.ref, true), matrix: l.matrix, color: l.color })), export: true, groups }, signal)
+        if (!out.ok || !out.step) return fail(`The export failed: ${out.ok ? 'no file' : out.error.message}`, 'export failed')
+        await keepOutput(this.h.env, out.step, key, 'model/step', `attachment; filename="${doc.id}-v${doc.version}.step"`)
+      }
+      const head = await this.h.env.FILES.head(key)
+      return { content: [{ type: 'text', text: `${doc.id} v${doc.version} as STEP, ${((head?.size ?? 0) / 1024).toFixed(1)} KB: ${doc.leaves.length} named instances${doc.leaves.some((l) => l.path.includes('/')) ? ', sub-assemblies nested' : ''}.` }], detail: `${doc.id} v${doc.version} STEP`, file: key }
+    }
     if (name === 'check_assembly') {
       const f = parse(T.CheckAssembly) as { assembly: string; clearance?: number; requirements?: Requirement[]; time_limit?: number; views?: string[]; section?: unknown } | null
       if (!f) return bad(T.CheckAssembly)
@@ -273,7 +333,20 @@ export class Assemblies {
   /** One call to the geometry service's /assembly: either a spec to lay out, or placed leaves to draw or export. */
   private async geometry(
     doc: Pick<AssemblyDoc, 'id' | 'name'>,
-    o: { spec?: Spec; subs?: Record<string, Spec>; partKeys?: string[]; refs?: ComponentRef[]; previous?: Record<string, number[]>; leaves?: { path: string; name: string; key: string; matrix: number[]; color?: string }[]; check?: boolean; render?: unknown; highlight?: string[][]; export?: boolean; time_limit?: number },
+    o: {
+      spec?: Spec
+      subs?: Record<string, Spec>
+      partKeys?: string[]
+      refs?: ComponentRef[]
+      previous?: Record<string, number[]>
+      leaves?: { path: string; name: string; key: string; matrix: number[]; color?: string }[]
+      check?: boolean
+      render?: unknown
+      highlight?: string[][]
+      export?: boolean
+      groups?: Record<string, string>
+      time_limit?: number
+    },
     signal: AbortSignal,
   ): Promise<GeoOut> {
     let partKeys = o.partKeys ?? []
@@ -316,6 +389,7 @@ export class Assemblies {
       render: o.render ?? null,
       highlight: o.highlight ?? [],
       export: !!o.export,
+      groups: o.groups ?? {},
       timeout: Math.max(120, (o.time_limit ?? TIME_LIMIT) + 90),
     }
     return geometryJson<GeoOut>(this.h.env, '/assembly', body, refs, signal)
@@ -428,6 +502,8 @@ export function placement(m: number[]) {
   const deg = (r: number) => n((r * 180) / Math.PI, 4) + 0
   return { pos: [m[3], m[7], m[11]], rot: [deg(rx), deg(ry), deg(rz)] }
 }
+
+const asArray = <X>(v: X | X[] | undefined): X[] => (v === undefined ? [] : Array.isArray(v) ? v : [v])
 
 function refLabel(ref: InstanceSpec['ref']) {
   if ('part' in ref) return `part ${ref.part}${ref.version ? ` (pinned v${ref.version})` : ''}`

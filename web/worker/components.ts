@@ -316,7 +316,7 @@ export async function runComponentTool(name: string, input: unknown, ctx: Compon
     } else {
       const data = await stepBytes(i)
       if (typeof data === 'string') return fail(data, 'no file')
-      src = { via: i.url ? 'url' : 'text', name: i.name ? `${i.name}.step` : (i.url?.split('/').pop()?.split('?')[0] ?? 'component.step'), data, ...(i.url && { url: i.url }) }
+      src = { via: i.url ? 'url' : i.base64 ? 'upload' : 'text', name: i.name ? `${i.name}.step` : (i.url?.split('/').pop()?.split('?')[0] ?? 'component.step'), data, ...(i.url && { url: i.url }) }
     }
     const r = await importComponent(env, uid, api, src, { id: i.id, name: i.name, vendor: i.vendor, partNumber: i.part_number, link: i.link, notes: i.notes })
     if (!r.ok) return fail(`Couldn't import it: ${r.why}.`, 'failed')

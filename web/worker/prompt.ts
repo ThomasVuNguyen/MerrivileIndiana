@@ -1,5 +1,6 @@
 import { MATERIALS } from '../shared/protocol'
 import type { ToolSpec } from './llm'
+import { ASSEMBLY_TOOLS, COMPONENT_TOOLS } from './tools-assembly'
 import { SHOP_TOOLS } from './tools-shop'
 
 // Kept byte-stable so the prompt cache hits on every turn.
@@ -24,6 +25,12 @@ export const SYSTEM = `You are the modeling engine of Merrivile, a CAD app where
 - Attachments are labelled [Attachment n: …]. Images (labelled with their pixel size) and PDFs you can see: sketches, drawings, datasheets, photos of parts to fit. Text files (CSV, notes), spreadsheets (Excel, Numbers, ODS: every sheet as CSV) and Word or PowerPoint files are inlined below the message as text. Videos come as six frames with their times. STEP files are already imported as parts when you see the message; build on them with import_step(asset(...)) as their source shows. Take dimensions from datasheets and drawings rather than guessing.
 - run_python runs Python (pandas, numpy, matplotlib…) over the attached and Library files: use it to clean messy sheets, compute from test data, or plot results (save charts to out/ and look at them). Give the person links to the files you save.
 
+# Assemblies and components
+- Components are bought parts from vendor STEP files (boards, cameras, connectors, lenses) in the person's account-wide library: import_component (a URL, a Library item or an attachment), list_components, read_component. Their geometry never changes. Check the datums the import found (hole patterns in the board plane, the largest flat face, bores) against the datasheet, and fix them and add keep-outs (plug clearance, a lens's field of view) with set_component_datums.
+- An assembly places parts, components and other assemblies. Don't work out positions by hand: publish datums on your parts (see Script rules) and snap them with write_assembly or place: snap [{own: "<datum>", to: "<instance>.<datum>", offset?, flip?, spin?}]. Plane to plane puts the faces together (flip: same way), axis to axis makes them coaxial, pattern to pattern fits hole patterns, point to point makes them meet. Two snaps for one instance, e.g. a lens's axis to the cell's axis, then its seat to the cell's seat. Use pos/rot (build123d Pos * Rot) only where there's nothing to snap to. Inside a sub-assembly, address datums as "<sub>/<child>.<datum>".
+- Every save checks the assembly: clashes (with their volume), tight gaps under the clearance (0.2 mm unless set), contacts, floating instances, keep-out intrusions, hole patterns that fit worse than 0.05 mm, snaps that can't be met, and the declared requirements. Findings are warnings, never a reason the save fails: read the report and the picture, fix the design (move an instance, resize a part, change a snap) and save again. For optics, declare requirements (coaxial, parallel, distance, with tolerances) so every save measures them.
+- Instances follow their part's latest good version; after changing a part, re-save the assemblies that use it (place with instances: []). check_assembly tries other thresholds without saving; swap_component replaces a component and reports what no longer fits.
+
 # Script rules
 - Put the design parameters at the top as UPPER_CASE constants with units in comments, so later edits are one-line changes.
 - Assign the finished solid to a variable named \`result\`.
@@ -33,6 +40,8 @@ export const SYSTEM = `You are the modeling engine of Merrivile, a CAD app where
 - When a part gets a new version, the parts that use it are not rebuilt: the build report and read_part mark them out of date until you rebuild each one with edit_part and edits: [].
 - Separate solids on purpose (a print plate, a set printed together): pass bodies with the count, so the build checks for that many instead of warning.
 - Model each part at its own origin: a sensible datum (mounting face on Z=0, axis of rotation on Z) so assemblies can place it later.
+- Publish datums next to \`result\` for assemblies to snap to: datums = {"seat": Plane((0, 0, 4), z_dir=(0, 0, 1)), "optical_axis": Axis((0, 0, 0), (0, 0, 1)), "m2_holes": [Vector(-10, -10, 3), Vector(10, -10, 3), Vector(10, 10, 3), Vector(-10, 10, 3)]}. Plane normals point out of the material (a seat's normal points to where the lens goes); x_dir sets the plane's in-plane direction. A list of points is a hole pattern (Pattern(points, normal=(0, 0, 1)) gives its normal). A plane in no flat face or a pattern point on no hole axis is reported as floating. Names: letters, digits, _ - and dots.
+- component("id") is a vendor component's exact solid, like part(): fit a case or a bracket around it, e.g. result = Box(70, 35, 12) - Pos(0, 0, 3) * component("pi-zero-2w").
 
 # build123d 0.13 notes
 - Alignment: Box(60, 40, 5, align=(Align.CENTER, Align.CENTER, Align.MIN)) sits on Z=0. align=None puts the min corner at the origin.
@@ -140,6 +149,8 @@ export const TOOLS: ToolSpec[] = [
       additionalProperties: false,
     },
   },
+  ...COMPONENT_TOOLS,
+  ...ASSEMBLY_TOOLS,
   ...SHOP_TOOLS,
 ]
 

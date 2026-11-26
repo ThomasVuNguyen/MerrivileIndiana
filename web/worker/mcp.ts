@@ -28,13 +28,20 @@ const INSTRUCTIONS = `Merrivile is a CAD app. Parts are build123d 0.13 Python sc
 
 # Workflow
 - list_projects, then list_parts, then read_part before you edit a part. write_part creates or rewrites; edit_part makes exact string replacements. Every build returns metrics, warnings and a 4-view render: check the numbers first, then the picture. Fix what's wrong before calling a part done. A failed build saves nothing: a new part isn't created and an existing one stays at its last good version.
-- Parts can build on each other with part("id") in their source. Changing a part marks the parts that use it out of date (build report, list_parts, read_part); rebuild each with edit_part edits: [] and check it still fits.
+- Parts can build on each other with part("id") in their source, and use vendor components with component("id"). Changing a part marks the parts that use it out of date (build report, list_parts, read_part); rebuild each with edit_part edits: [] and check it still fits.
 - inspect is the measuring tool. It runs Python in the same environment as part scripts: build123d pre-imported, and part("id") is that part's exact solid, rebuilt from its last good source (no mesh, no STEP round trip). print() measurements; assign \`report\` for structured results; assign \`result\` to get its full-precision metrics and a render from the views you pick. A list or {name: shape} dict draws each part in its own colour (parts keep their colour even when moved, e.g. Pos(0, 0, 5) * part("lid")), with a legend. For a section view pass section ({normal: "x" | "y" | "z" | [x, y, z], offset?, keep?}): the picture is cut exactly and the cut faces are hatched. Nothing is saved. Use it for distances, radii, angles, wall thickness, concentricity, clearance and interference between parts (a & b), placing parts relative to each other with Location/Pos/Rot, and tolerance stacks.
 - Precision: millimetres, double precision throughout. Build reports are rounded (to 0.01 mm); inspect is not. OpenCASCADE's modelling tolerance is 1e-7 mm. Booleans and fillets can leave slivers: check is_valid and the solid count.
 - High-accuracy work (optics): put every critical dimension in an UPPER_CASE parameter with its tolerance in a comment, derive the rest from them, then measure the built solid with inspect against the intended numbers (seat diameters, bore coaxiality, distances from datum faces to optical surfaces, tilt of mounting faces). Measure the solid; don't trust the script.
 - Every picture from inspect and render_part also appears in the project's "Outside agent (MCP)" chat, where the person sees it, with your caption under it; the result includes a link (valid 1 h, no login) you can give them. Write a caption that says what they're looking at and what to notice.
 - export_part gives a download link (valid 1 h, no login needed) for STEP, STL or the render. import_step brings in vendor models (a lens, mount or sensor STEP from a URL) as parts you can build around.
 - The shop (hardware and tools), memory and Library belong to the owner. Search the shop before choosing hardware, size holes to the exact item, and follow memory as standing preferences.
+
+# Assemblies and components
+- Components are vendor STEP models (boards, cameras, connectors, lenses) in the account's library, usable in every project: import_component (url, step, base64 or a Library item id), or start_upload for a file on your machine (one-time link: curl -T file.step "<link>"). list_components and read_component show their datums; import suggests datums (hole patterns in the board plane named like holes_d2.7, the largest flat face as base, bores). Check them against the datasheet and fix them, and add keep-outs (plug clearance, a lens's field of view as a cone), with set_component_datums. A component never changes; a new revision is a new import.
+- Workflow: 1) publish datums on your parts (datums = {...} next to result; see Script rules); 2) import the components; 3) write_assembly with instances snapped datum to datum: snap [{own, to: "<instance>.<datum>", offset?, flip?, spin?}]; 4) read the report and the picture; 5) fix the design (place, edit_part, set_component_datums) and save again. Don't compute placements by hand: snap. pos/rot (Pos * Rot, degrees, X then Y then Z) is the fallback.
+- Snaps: plane → plane puts faces together (normals opposed; flip: aligned), offset along the target normal, spin about it. axis → axis is coaxial (directions aligned; flip: opposed), offset slides along it, spin turns about it. pattern → pattern best-fits hole patterns (Kabsch) and reports the worst point's residual; a symmetric pattern fits several ways, so say which with spin. point → point. Two snaps per instance where one leaves freedom: a lens's optical_axis → cell.optical_axis, then seat → cell.seat. The ground (first instance, or ground: true) stays put. Sub-assemblies: own "<child>.<datum>", to "<sub>/<child>.<datum>".
+- Every save checks: clash (volume mm³, centroid, box; drawn red), tight_gap (under the clearance, default 0.2 mm), contact, floating (not connected to the ground), keepout, pattern_fit (> 0.05 mm), snap_conflict, unresolved (a missing datum or instance: the instance keeps its last placement and is reported, never silently moved), and requirements. Findings never block a save. For optics declare requirements: {kind: "coaxial", a: "lens.optical_axis", b: "cell.optical_axis", tol_mm?, tol_deg?}, parallel, distance (default tolerances 0.02 mm, 0.05°); every save measures them.
+- Instances follow their part's latest good version (version pins one); a part change marks its assemblies out of date: re-save with place instances: []. check_assembly re-checks without saving (other clearance, extra requirements, time_limit). render_assembly shows the saved assembly (views, section). swap_component replaces a component and reports what no longer fits. duplicate_assembly tries a variant. export_assembly gives a STEP of the whole assembly with named instances. In inspect, assembly("id") is {instance name: placed shape} as last saved, ready to measure or draw.
 
 ${SYSTEM.slice(SYSTEM.indexOf('# Script rules'))}`
 
@@ -115,7 +122,7 @@ const PROJECT_TOOLS: Spec[] = [
   {
     name: 'inspect',
     description:
-      'Run build123d Python to measure and check geometry without saving anything. build123d is pre-imported and part("id") returns that part\'s exact solid (rebuilt from its last good source), as in part scripts. print() what you measure; assign `report` (any JSON value) for structured output; assign `result` to get its full-precision metrics and a render. `result` can be a shape, a list of shapes or {"name": shape}: each part is drawn in its own colour (also when moved, e.g. Pos(0, 0, 2) * part("glass")), other shapes and loose solids in distinct colours, with a legend naming them. section cuts the picture to show the inside. Examples: hole = part("lens-cell").faces().filter_by(GeomType.CYLINDER).sort_by(SortBy.RADIUS)[-1]; print(hole.radius, hole.center()). Interference: print((part("a") & Pos(0, 0, 12) * part("b")).volume). Assembly: result = {"board": part("pcb"), "glass": Pos(0, 0, 1.6) * part("glass")} with section {normal: "y"}. The picture is saved, shown to the person in the project\'s "Outside agent (MCP)" chat with your caption, and linked in the result. Without a project only plain build123d is available. Limits: 120 s by default (timeout up to 300), 3 GB of memory, no files or network.',
+      'Run build123d Python to measure and check geometry without saving anything. build123d is pre-imported and part("id") returns that part\'s exact solid (rebuilt from its last good source), as in part scripts; component("id") a vendor component\'s solid; assembly("id") an assembly as last saved, {instance name: placed shape} (each in its instance\'s colour). print() what you measure; assign `report` (any JSON value) for structured output; assign `result` to get its full-precision metrics and a render. `result` can be a shape, a list of shapes or {"name": shape}: each part is drawn in its own colour (also when moved, e.g. Pos(0, 0, 2) * part("glass")), other shapes and loose solids in distinct colours, with a legend naming them. section cuts the picture to show the inside. Examples: hole = part("lens-cell").faces().filter_by(GeomType.CYLINDER).sort_by(SortBy.RADIUS)[-1]; print(hole.radius, hole.center()). Interference: print((part("a") & Pos(0, 0, 12) * part("b")).volume). Assembly: result = {"board": part("pcb"), "glass": Pos(0, 0, 1.6) * part("glass")} with section {normal: "y"}. The picture is saved, shown to the person in the project\'s "Outside agent (MCP)" chat with your caption, and linked in the result. Without a project only plain build123d is available. Limits: 120 s by default (timeout up to 300), 3 GB of memory, no files or network.',
     inputSchema: obj({ project: PROJECT, code: { type: 'string' }, views: VIEWS, size: SIZE, section: SECTION, caption: CAPTION, timeout: { type: 'number', minimum: 1, maximum: 300 } }, ['code']),
     annotations: READ,
   },
@@ -142,6 +149,12 @@ const PROJECT_TOOLS: Spec[] = [
     ),
   },
   ...ASSEMBLY_TOOLS.map((t) => assemblyTool(t.name)),
+  {
+    name: 'export_assembly',
+    description: "A download link (valid 1 hour, no login) to the assembly as last saved, as one STEP: each instance a named shape at its place, sub-assemblies nested. curl -o works directly.",
+    inputSchema: obj({ project: PROJECT, assembly: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,40}$' } }, ['project', 'assembly']),
+    annotations: READ,
+  },
   {
     name: 'read_chats',
     description: "The project's chats with the in-app AI: without chat, the list; with a chat id, its latest messages (the person's requests, the AI's tool calls and answers). Useful to learn what the person asked for.",
@@ -331,6 +344,12 @@ async function callTool(name: string, input: Record<string, unknown>, o: { env: 
       return { content: toContent(r.content), isError: r.isError }
     }
     const r = await stub().mcp(who, name, input)
+    if (r.file) {
+      const link = await signedLink(o.directory, o.origin, r.file)
+      const out = { content: toContent(r.content), isError: r.isError }
+      out.content.push({ type: 'text', text: `Download (valid 1 hour, no login): ${link}\nFor example: curl -o ${r.file.split('/').slice(-2).join('-')} "${link}"` })
+      return out
+    }
     return withLink({ content: toContent(r.content), isError: r.isError }, r.render, o, true)
   }
 

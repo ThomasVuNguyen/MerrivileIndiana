@@ -221,6 +221,7 @@ def _environment(assets: dict[str, bytes], parts: dict[str, str], files: str, co
         out: dict = {}
         for leaf in assemblies[aid]:
             shape = shape_of(leaf["key"]).moved(_location(leaf["matrix"]))
+            shape.label = leaf["path"]  # drawn in the instance's colour from the assembly
             name = leaf.get("name") or leaf["path"]
             out[leaf["path"] if name in out else name] = shape
         return out
@@ -647,7 +648,7 @@ def _assembly_in(job: dict, environment) -> dict:
         from geometry import cache
 
         out = cache.output("step")
-        _export(placed, out, str(job.get("name") or "assembly"))
+        _export(placed, out, str(job.get("name") or "assembly"), job.get("groups") or {})
         reply["step"] = os.path.basename(out)
         reply["step_bytes"] = os.path.getsize(out)
     reply["ms_inside"] = round((time.perf_counter() - started) * 1000)
@@ -681,9 +682,14 @@ def _not_red(rgb) -> bool:
     return not (r > 180 and g < 130 and b < 140)
 
 
-def _export(placed: list, path: str, name: str) -> None:
-    """A STEP of the placed assembly, one named shape per instance, sub-assemblies nested."""
+def _export(placed: list, path: str, name: str, groups: dict) -> None:
+    """A STEP of the placed assembly, one named shape per instance, sub-assemblies nested (named from
+    `groups`, {path: name}). Instances of the same part get their own copy: STEP names a shared shape once."""
+    import copy
+
     from build123d import Compound, export_step
+
+    seen: set = set()
 
     tree: dict = {}
     for l in placed:
@@ -693,15 +699,25 @@ def _export(placed: list, path: str, name: str) -> None:
             node = node.setdefault(s, {})
         node[last] = ("leaf", l)
 
+    def prefix(node: dict) -> str:
+        """The path of a sub-assembly node, from any leaf under it."""
+        for v in node.values():
+            if isinstance(v, tuple):
+                return v[1]["path"].rsplit("/", 1)[0]
+            return prefix(v).rsplit("/", 1)[0]
+        return ""
+
     def build(node: dict, label: str):
         kids = []
         for key, v in node.items():
             if isinstance(v, tuple):
-                s = v[1]["shape"].moved(_location([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]))  # a copy to name
-                s.label = str(v[1]["name"] or key)
+                leaf = v[1]
+                s = copy.deepcopy(leaf["shape"]) if leaf["key"] in seen else leaf["shape"].moved(_location([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]))
+                seen.add(leaf["key"])
+                s.label = str(leaf["name"] or key)
                 kids.append(s)
             else:
-                kids.append(build(v, key))
+                kids.append(build(v, groups.get(f"{prefix(v)}") or key))
         return Compound(children=kids, label=label)
 
     export_step(build(tree, name), path)

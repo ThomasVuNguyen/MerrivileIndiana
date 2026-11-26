@@ -75,7 +75,7 @@ type Build =
 type AiEntry = Extract<ChatEntry, { role: 'ai' }>
 
 /** What an outside agent's tool call returns: text and pictures, and the R2 key of a render it made. */
-export type AgentReply = { content: Extract<Block, { type: 'text' | 'image' }>[]; isError?: boolean; render?: string }
+export type AgentReply = { content: Extract<Block, { type: 'text' | 'image' }>[]; isError?: boolean; render?: string; file?: string }
 
 /** One project: its parts, its chat, and the agent loop that edits them. */
 export class Project extends DurableObject<Env> {
@@ -470,6 +470,9 @@ export class Project extends DurableObject<Env> {
         ? `[Parts in this project: ${parts.map((p) => `${p.id} "${p.name}" v${p.version} ${p.status === 'ok' ? 'builds' : 'has a build error'}${p.stale?.length ? ', out of date' : ''}`).join('; ')}]`
         : '[This project has no parts yet.]',
     )
+    const assemblies = this.asm.list()
+    if (assemblies.length)
+      lines.push(`[Assemblies: ${assemblies.map((a) => `${a.id} "${a.name}" v${a.version}, ${a.instances.length} instances, ${a.report?.warnings ?? 0} warnings${a.stale?.length ? ', out of date' : ''}`).join('; ')}]`)
     // Memory and shop go in only when they changed since this chat saw them, so history stays small.
     const hash = String(hashOf(context))
     if (hash !== this.threads.meta(this.thread, 'context')) {
@@ -761,7 +764,7 @@ export class Project extends DurableObject<Env> {
         }
         if (r.fact) tell(r.fact)
         finish(r.line)
-        return { content: r.content as AgentReply['content'], isError: r.isError, render: r.render }
+        return { content: r.content as AgentReply['content'], isError: r.isError, render: r.render, file: r.file }
       }
       if (name === 'write_part' || name === 'edit_part' || name === 'set_part_hardware') {
         const r = await this.execute({ type: 'tool_call', id: `mcp-${crypto.randomUUID().slice(0, 8)}`, name, input }, log, true, signal)
@@ -844,7 +847,7 @@ export class Project extends DurableObject<Env> {
         const started = Date.now()
         const r = await runInspect(
           this.env,
-          { code, views: input.views as View[] | undefined, size: input.size as number | undefined, section: input.section as Section | undefined, timeout: input.timeout as number | undefined, ...(await this.partInputs(code)) },
+          { code, views: input.views as View[] | undefined, size: input.size as number | undefined, section: input.section as Section | undefined, timeout: input.timeout as number | undefined, ...(await this.inspectInputs(code)) },
           signal,
         )
         Object.assign(state, { state: r.isError ? 'error' : 'done', detail: name === 'inspect' ? r.summary : `${id} · ${r.summary}`, ms: Date.now() - started })
@@ -910,6 +913,33 @@ export class Project extends DurableObject<Env> {
     const used = componentsIn([code, ...[...seen].map((id) => parts[id] ?? '')].join('\n'))
     const components = used.length ? ((await this.account().componentRefs(used)) as unknown as ComponentRef[]) : []
     return { parts, assets, colors, components }
+  }
+
+  /**
+   * partInputs plus, for each assembly("id") the code names, its placed leaves (as last saved, each
+   * part at the version it was placed with) and each instance's colour.
+   */
+  private async inspectInputs(code: string) {
+    const assemblies: Record<string, unknown[]> = {}
+    const pinned: Record<string, string> = {}
+    const instanceColors: Record<string, string> = {}
+    let uses = ''
+    for (const [, id] of code.matchAll(/\bassembly\(\s*["']([a-z0-9][a-z0-9-]{0,40})["']\s*\)/g)) {
+      const doc = this.asm.get(id)
+      if (!doc || assemblies[id]) continue
+      assemblies[id] = doc.leaves.map((l) => ({ path: l.path, name: l.name, matrix: l.matrix, key: 'component' in l.ref ? `component:${l.ref.component}` : `part:${l.ref.part}@${l.ref.version}` }))
+      for (const l of doc.leaves) {
+        instanceColors[l.path] = l.color
+        if ('component' in l.ref) uses += `component("${l.ref.component}")\n`
+        else {
+          uses += `part("${l.ref.part}")\n`
+          const row = this.sql.exec<{ source: string }>('SELECT source FROM versions WHERE part = ? AND version = ?', l.ref.part, l.ref.version).toArray()[0]
+          if (row) pinned[`${l.ref.part}@${l.ref.version}`] = row.source
+        }
+      }
+    }
+    const inputs = await this.partInputs(`${code}\n${uses}`)
+    return { ...inputs, parts: { ...inputs.parts, ...pinned }, colors: { ...inputs.colors, ...instanceColors }, assemblies }
   }
 
   /** The chat entry an outside agent's work shows in: the latest one if it's recent, or a new one. */
