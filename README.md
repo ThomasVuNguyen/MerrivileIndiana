@@ -102,8 +102,12 @@ such as Claude Code can do what the in-app AI does. They sign in on every reques
   `delete_part`, `set_part_hardware`, `import_step` (URL, text or base64), `read_chats`.
 - Review: `inspect` runs build123d code where `part("id")` rebuilds a part from source (exact B-rep),
   prints measurements, returns `report` and full-precision metrics and renders of `result` from any
-  view (`/inspect` in the geometry service). `render_part` and `export_part` (signed `/api/dl/`
-  links, valid 1 h, no login).
+  view (`/inspect` in the geometry service). A list or `{name: shape}` result draws each part in its
+  own colour with a legend (`geometry/scene.py`; part() labels its solid, and moved copies keep the
+  label); `section` cuts the picture exactly and hatches the cut faces. `render_part` and
+  `export_part` (signed `/api/dl/` links, valid 1 h, no login).
+- Every render from `inspect` or `render_part` is saved under `projects/<id>/renders/`, shown in the
+  "Outside agent (MCP)" chat with the agent's `caption`, and linked (signed, 1 h) in the tool result.
 - Shop, memory and Library: the chat AI's tools (`worker/tools-shop.ts`), plus `list_memory`.
 
 What an agent changes appears live in the viewer and in the project's "Outside agent (MCP)" chat,

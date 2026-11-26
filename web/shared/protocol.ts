@@ -137,6 +137,8 @@ export type Attachment = {
   processing?: boolean
   /** Why it couldn't, shown on the file. */
   problem?: string
+  /** Shown under a render an outside agent put in the chat. */
+  caption?: string
 }
 
 /** A face the user picked in the viewer, passed to the AI with their message. */
@@ -154,7 +156,7 @@ export type CallState = { id: string; tool: string; detail: string; state: 'runn
 
 export type ChatEntry =
   | { role: 'user'; text: string; faces?: FaceRef[]; images?: Attachment[] }
-  | { role: 'ai'; text: string; calls: CallState[]; model?: string; error?: boolean; notes?: ChangeNote[]; startedAt?: number; ms?: number }
+  | { role: 'ai'; text: string; calls: CallState[]; model?: string; error?: boolean; notes?: ChangeNote[]; startedAt?: number; ms?: number; images?: Attachment[] }
 
 /** The tessellation served to the viewer. Arrays are base64 little-endian. */
 export type PartMesh = {

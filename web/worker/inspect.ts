@@ -8,14 +8,20 @@ import type { Block } from './llm'
 
 export type View = string | { name?: string; dir: number[]; up?: number[] }
 
+/** Cut the picture with a plane n·p = offset (default through the middle), keeping one side. */
+export type Section = { normal: number[] | 'x' | 'y' | 'z'; offset?: number; keep?: 'below' | 'above' }
+
 export type InspectRequest = {
   code: string
   /** Part id → the build123d source of its last good build. */
   parts?: Record<string, string>
   /** Asset name → base64, e.g. an imported STEP a part reads. */
   assets?: Record<string, string>
+  /** Part id → its display colour, so each part shows in its own colour. */
+  colors?: Record<string, string>
   views?: View[]
   size?: number
+  section?: Section
   timeout?: number
 }
 
@@ -24,7 +30,7 @@ type InspectOut =
   | { ok: false; ms: number; stdout: string; error: BuildError }
 
 /** Runs the code in the geometry service and turns the answer into tool-result blocks. */
-export async function runInspect(env: Env, req: InspectRequest, signal?: AbortSignal): Promise<{ content: Block[]; isError?: boolean; summary: string }> {
+export async function runInspect(env: Env, req: InspectRequest, signal?: AbortSignal): Promise<{ content: Block[]; isError?: boolean; summary: string; png?: string }> {
   const res = await geometryFetch(env, '/inspect', { method: 'POST', body: JSON.stringify({ timeout: 120, ...req }), signal })
   if (!res.ok) throw new Error(`geometry service answered HTTP ${res.status}`)
   const out = (await res.json()) as InspectOut
@@ -39,5 +45,5 @@ export async function runInspect(env: Env, req: InspectRequest, signal?: AbortSi
   if (out.metrics) lines.push(`result (full precision, mm):\n${JSON.stringify(out.metrics, null, 2)}`)
   const content: Block[] = [{ type: 'text', text: lines.join('\n') }]
   if (out.render) content.push({ type: 'image', mediaType: 'image/png', data: out.render })
-  return { content, summary: out.metrics ? `${out.metrics.solids} solids · ${out.metrics.faces} faces` : 'measured' }
+  return { content, summary: out.metrics ? `${out.metrics.solids} solids · ${out.metrics.faces} faces` : 'measured', png: out.render }
 }
