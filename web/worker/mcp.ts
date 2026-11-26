@@ -7,7 +7,7 @@ import type { Directory, User } from './auth'
 import type { Env } from './env'
 import { accountOf } from './env'
 import { runInspect } from './inspect'
-import type { View } from './inspect'
+import type { Section, View } from './inspect'
 import { blockForLog, Trace } from './langfuse'
 import type { Block } from './llm'
 import { SYSTEM, TOOLS } from './prompt'
@@ -25,9 +25,10 @@ const INSTRUCTIONS = `Merrivile is a CAD app. Parts are build123d 0.13 Python sc
 
 # Workflow
 - list_projects, then list_parts, then read_part before you edit a part. write_part creates or rewrites; edit_part makes exact string replacements. Every build returns metrics, warnings and a 4-view render: check the numbers first, then the picture. Fix what's wrong before calling a part done.
-- inspect is the measuring tool. It runs Python with build123d where part("id") is that part's exact solid, rebuilt from its source (no mesh, no STEP round trip). print() measurements; assign \`report\` for structured results; assign \`result\` to get its full-precision metrics and a render from the views you pick. Cut sections by intersecting with a Box or using split(). Nothing is saved. Use it for distances, radii, angles, wall thickness, concentricity, clearance and interference between parts (a & b), placing parts relative to each other with Location/Pos/Rot, and tolerance stacks.
+- inspect is the measuring tool. It runs Python with build123d where part("id") is that part's exact solid, rebuilt from its source (no mesh, no STEP round trip). print() measurements; assign \`report\` for structured results; assign \`result\` to get its full-precision metrics and a render from the views you pick. A list or {name: shape} dict draws each part in its own colour (parts keep their colour even when moved, e.g. Pos(0, 0, 5) * part("lid")), with a legend. For a section view pass section ({normal: "x" | "y" | "z" | [x, y, z], offset?, keep?}): the picture is cut exactly and the cut faces are hatched. Nothing is saved to the parts. Use it for distances, radii, angles, wall thickness, concentricity, clearance and interference between parts (a & b), placing parts relative to each other with Location/Pos/Rot, and tolerance stacks.
 - Precision: millimetres, double precision throughout. Build reports are rounded (to 0.01 mm); inspect is not. OpenCASCADE's modelling tolerance is 1e-7 mm. Booleans and fillets can leave slivers: check is_valid and the solid count.
 - High-accuracy work (optics): put every critical dimension in an UPPER_CASE parameter with its tolerance in a comment, derive the rest from them, then measure the built solid with inspect against the intended numbers (seat diameters, bore coaxiality, distances from datum faces to optical surfaces, tilt of mounting faces). Measure the solid; don't trust the script.
+- Every picture from inspect and render_part also appears in the project's "Outside agent (MCP)" chat, where the person sees it, with your caption under it; the result includes a link (valid 1 h, no login) you can give them. Write a caption that says what they're looking at and what to notice.
 - export_part gives a download link (valid 1 h, no login needed) for STEP, STL or the render. import_step brings in vendor models (a lens, mount or sensor STEP from a URL) as parts you can build around.
 - The shop (hardware and tools), memory and Library belong to the owner. Search the shop before choosing hardware, size holes to the exact item, and follow memory as standing preferences.
 
@@ -53,6 +54,19 @@ const VIEWS = {
   },
 }
 const SIZE = { type: 'integer', minimum: 200, maximum: 1000, description: 'Pixels per view (default 420).' }
+const SECTION = {
+  type: 'object',
+  description:
+    'Cut the picture with a plane and keep one side, to see inside (walls, bores, seats, fits between parts). The cut is exact (B-rep split) and cut faces are drawn darker and hatched. Without views, shows the cut face straight on and from an iso angle. Only the picture is cut; metrics are of the whole result.',
+  properties: {
+    normal: { anyOf: [{ type: 'string', enum: ['x', 'y', 'z'] }, { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }], description: 'The plane\'s normal: an axis or [x, y, z].' },
+    offset: { type: 'number', description: 'Where the plane is, in mm along the normal from the origin (the plane n·p = offset; "z" with 5 cuts at Z = 5). Default: through the centre of the bounding box.' },
+    keep: { type: 'string', enum: ['below', 'above'], description: 'Which side to keep: below (default) is the side the normal points away from.' },
+  },
+  required: ['normal'],
+  additionalProperties: false,
+}
+const CAPTION = { type: 'string', maxLength: 500, description: "Shown under the picture in the project's chat: what the person is looking at and what to notice." }
 
 const obj = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false })
 const READ = { readOnlyHint: true }
@@ -84,14 +98,15 @@ const PROJECT_TOOLS: Spec[] = [
   {
     name: 'inspect',
     description:
-      'Run build123d Python to measure and check geometry without saving anything. part("id") returns that part\'s exact solid (rebuilt from its source). print() what you measure; assign `report` (any JSON value) for structured output; assign `result` (a shape or list of shapes) to get its full-precision metrics and a render. Examples: hole = part("lens-cell").faces().filter_by(GeomType.CYLINDER).sort_by(SortBy.RADIUS)[-1]; print(hole.radius, hole.center()). Interference: print((part("a") & Pos(0, 0, 12) * part("b")).volume). Section: result = part("barrel") & Box(200, 0.01, 200). Without a project only plain build123d is available. Limits: 120 s by default (timeout up to 300), 3 GB of memory, no files or network.',
-    inputSchema: obj({ project: PROJECT, code: { type: 'string' }, views: VIEWS, size: SIZE, timeout: { type: 'number', minimum: 1, maximum: 300 } }, ['code']),
+      'Run build123d Python to measure and check geometry without saving anything. part("id") returns that part\'s exact solid (rebuilt from its source). print() what you measure; assign `report` (any JSON value) for structured output; assign `result` to get its full-precision metrics and a render. `result` can be a shape, a list of shapes or {"name": shape}: each part is drawn in its own colour (also when moved, e.g. Pos(0, 0, 2) * part("glass")), other shapes and loose solids in distinct colours, with a legend naming them. section cuts the picture to show the inside. Examples: hole = part("lens-cell").faces().filter_by(GeomType.CYLINDER).sort_by(SortBy.RADIUS)[-1]; print(hole.radius, hole.center()). Interference: print((part("a") & Pos(0, 0, 12) * part("b")).volume). Assembly: result = {"board": part("pcb"), "glass": Pos(0, 0, 1.6) * part("glass")} with section {normal: "y"}. The picture is saved, shown to the person in the project\'s "Outside agent (MCP)" chat with your caption, and linked in the result. Without a project only plain build123d is available. Limits: 120 s by default (timeout up to 300), 3 GB of memory, no files or network.',
+    inputSchema: obj({ project: PROJECT, code: { type: 'string' }, views: VIEWS, size: SIZE, section: SECTION, caption: CAPTION, timeout: { type: 'number', minimum: 1, maximum: 300 } }, ['code']),
     annotations: READ,
   },
   {
     name: 'render_part',
-    description: "Look at a part. Without views or size: its stored 4-view sheet (iso, front, top, right). With them: fresh renders from any direction, up to 1000 px per view.",
-    inputSchema: obj({ project: PROJECT, part: PART, views: VIEWS, size: SIZE }, ['project', 'part']),
+    description:
+      "Look at a part. Without views, size or section: its stored 4-view sheet (iso, front, top, right). With them: fresh renders from any direction, up to 1000 px per view, in the part's colour; section cuts it to show the inside. The picture is shown to the person in the project's \"Outside agent (MCP)\" chat with your caption, and linked in the result.",
+    inputSchema: obj({ project: PROJECT, part: PART, views: VIEWS, size: SIZE, section: SECTION, caption: CAPTION }, ['project', 'part']),
     annotations: READ,
   },
   {
@@ -244,8 +259,14 @@ async function callTool(name: string, input: Record<string, unknown>, o: { env: 
   }
 
   if (name === 'inspect' && !projectId) {
-    const r = await runInspect(env, { code: String(input.code ?? ''), views: input.views as View[] | undefined, size: input.size as number | undefined, timeout: input.timeout as number | undefined })
-    return { content: toContent(r.content), isError: r.isError }
+    const r = await runInspect(env, { code: String(input.code ?? ''), views: input.views as View[] | undefined, size: input.size as number | undefined, section: input.section as Section | undefined, timeout: input.timeout as number | undefined })
+    // No project chat to show it in, but the person can still open the link.
+    let key: string | undefined
+    if (r.png) {
+      key = `users/${user.id}/renders/${crypto.randomUUID()}.png`
+      await env.FILES.put(key, Uint8Array.from(atob(r.png), (c) => c.charCodeAt(0)), { httpMetadata: { contentType: 'image/png' } })
+    }
+    return withLink({ content: toContent(r.content), isError: r.isError }, key, o, false)
   }
   if (PROJECT_TOOL_NAMES.has(name)) {
     if (!projectId) return text('This tool needs a project id; call list_projects.', true)
@@ -257,12 +278,21 @@ async function callTool(name: string, input: Record<string, unknown>, o: { env: 
       return { content: toContent(r.content), isError: r.isError }
     }
     const r = await stub().mcp(who, name, input)
-    return { content: toContent(r.content), isError: r.isError }
+    return withLink({ content: toContent(r.content), isError: r.isError }, r.render, o, true)
   }
 
   // Shop, memory and Library: the same code as the chat AI's tools.
   const out = await runShopTool(name, input, { api: account as unknown as ShopApi, env, uid: user.id, attachments: [], files: [], projectId: projectId || undefined, projectName: info?.name, vision: true }, `mcp-${Date.now()}`)
   return { content: toContent(out.result.content), isError: out.result.isError }
+}
+
+/** Adds a signed link to a saved render, so the agent can hand the picture to the person. */
+async function withLink(reply: Reply, key: string | undefined, o: { directory: DurableObjectStub<Directory>; origin: string }, inChat: boolean): Promise<Reply> {
+  if (!key) return reply
+  const link = await signedLink(o.directory, o.origin, key)
+  const where = inChat ? `The person sees it in the project's "Outside agent (MCP)" chat. ` : ''
+  reply.content.push({ type: 'text', text: `${where}Link to the picture (PNG, valid 1 hour, no login), to give the person: ${link}` })
+  return reply
 }
 
 async function exportPart(input: Record<string, unknown>, o: { directory: DurableObjectStub<Directory>; origin: string; env: Env }, projectId: string, stub: () => DurableObjectStub<import('./project').Project>): Promise<Reply> {

@@ -7,7 +7,7 @@ import { accountOf } from './env'
 import type { Env } from './env'
 import { geometryFetch } from './geometry'
 import { runInspect } from './inspect'
-import type { View } from './inspect'
+import type { Section, View } from './inspect'
 import { Trace } from './langfuse'
 import type { Block, HistoryItem, ToolResult } from './llm'
 import { ModelError } from './llm'
@@ -68,8 +68,8 @@ type Build =
 
 type AiEntry = Extract<ChatEntry, { role: 'ai' }>
 
-/** What an outside agent's tool call returns: text and pictures. */
-export type AgentReply = { content: Extract<Block, { type: 'text' | 'image' }>[]; isError?: boolean }
+/** What an outside agent's tool call returns: text and pictures, and the R2 key of a render it made. */
+export type AgentReply = { content: Extract<Block, { type: 'text' | 'image' }>[]; isError?: boolean; render?: string }
 
 /** One project: its parts, its chat, and the agent loop that edits them. */
 export class Project extends DurableObject<Env> {
@@ -652,7 +652,7 @@ export class Project extends DurableObject<Env> {
       const entries = this.threads.entries(thread).slice(-Number(input.last ?? 30))
       return text(
         entries
-          .map((e) => (e.role === 'user' ? `PERSON: ${e.text}${e.images?.length ? ` [${e.images.map((a) => a.name ?? 'file').join(', ')}]` : ''}` : `AI${e.model ? ` (${e.model})` : ''}: ${e.calls.map((c) => `[${c.tool} ${c.detail}]`).join(' ')} ${e.text}`))
+          .map((e) => (e.role === 'user' ? `PERSON: ${e.text}${e.images?.length ? ` [${e.images.map((a) => a.name ?? 'file').join(', ')}]` : ''}` : `AI${e.model ? ` (${e.model})` : ''}: ${e.calls.map((c) => `[${c.tool} ${c.detail}]`).join(' ')} ${e.text}${e.images?.length ? ` [renders: ${e.images.map((a) => a.caption ?? a.name).join('; ')}]` : ''}`))
           .join('\n\n'),
       )
     }
@@ -722,23 +722,44 @@ export class Project extends DurableObject<Env> {
       }
       if (name === 'inspect' || name === 'render_part') {
         const code = name === 'inspect' ? String(input.code ?? '') : `result = part(${JSON.stringify(id)})`
+        // Renders show in the agent's chat, so the person sees what the agent looked at.
+        const caption = typeof input.caption === 'string' ? input.caption.trim().slice(0, 500) : ''
+        const show = (key: string, label: string) => {
+          log.entry.images = [...(log.entry.images ?? []), { key, url: `/api/files/${key}`, kind: 'image', name: `${label}.png`, ...(caption && { caption }) }]
+        }
         if (name === 'render_part') {
           const part = this.part(id)
           if (!part?.files) return text(`No built part "${id}".`, true)
-          // The stored 4-view sheet when no particular view is asked for.
-          if (!input.views && !input.size) {
-            const obj = await this.env.FILES.get(part.files.render.replace('/api/files/', ''))
-            if (obj) return { content: [{ type: 'text', text: describe(part, false) }, { type: 'image', mediaType: 'image/png', data: toBase64(new Uint8Array(await obj.arrayBuffer())) }] }
+          // The stored 4-view sheet when no particular view or section is asked for.
+          if (!input.views && !input.size && !input.section) {
+            const key = part.files.render.replace('/api/files/', '')
+            const obj = await this.env.FILES.get(key)
+            if (obj) {
+              log.entry.calls.push({ id: `mcp-render_part-${Date.now()}`, tool: name, detail: `${id} v${part.version}`, state: 'done', ms: 0 })
+              show(key, `${id}-v${part.version}`)
+              finish()
+              return { content: [{ type: 'text', text: describe(part, false) }, { type: 'image', mediaType: 'image/png', data: toBase64(new Uint8Array(await obj.arrayBuffer())) }], render: key }
+            }
           }
         }
         const state: CallState = { id: `mcp-${name}-${Date.now()}`, tool: name, detail: name === 'inspect' ? 'running' : id, state: 'running' }
         log.entry.calls.push(state)
         this.toThread({ type: 'call', index: log.index, call: state }, log.thread)
         const started = Date.now()
-        const r = await runInspect(this.env, { code, views: input.views as View[] | undefined, size: input.size as number | undefined, timeout: input.timeout as number | undefined, ...(await this.inspectInputs(code)) }, signal)
+        const r = await runInspect(
+          this.env,
+          { code, views: input.views as View[] | undefined, size: input.size as number | undefined, section: input.section as Section | undefined, timeout: input.timeout as number | undefined, ...(await this.inspectInputs(code)) },
+          signal,
+        )
         Object.assign(state, { state: r.isError ? 'error' : 'done', detail: name === 'inspect' ? r.summary : `${id} · ${r.summary}`, ms: Date.now() - started })
+        let render: string | undefined
+        if (r.png) {
+          render = `projects/${this.projectId()}/renders/${crypto.randomUUID()}.png`
+          await this.env.FILES.put(render, bytes(r.png), { httpMetadata: { contentType: 'image/png' } })
+          show(render, name === 'inspect' ? 'inspect' : id)
+        }
         finish()
-        return { content: r.content as AgentReply['content'], isError: r.isError }
+        return { content: r.content as AgentReply['content'], isError: r.isError, render }
       }
       return text(`Unknown tool ${name}.`, true)
     } catch (err) {
@@ -759,14 +780,16 @@ export class Project extends DurableObject<Env> {
     await this.ctx.storage.deleteAll()
   }
 
-  /** Each part's last good source for part(id), and the assets of the parts the code names. */
+  /** Each part's last good source and colour for part(id), and the assets of the parts the code names. */
   private async inspectInputs(code: string) {
     const parts: Record<string, string> = {}
+    const colors: Record<string, string> = {}
     const named = new Set<string>([...code.matchAll(/asset\(\s*["']([\w.-]+)["']\s*\)/g)].map((m) => m[1]))
     for (const p of this.parts()) {
       const row = this.sql.exec<{ source: string }>('SELECT source FROM versions WHERE part = ? AND version = ?', p.id, p.version).toArray()[0]
       if (!row) continue
       parts[p.id] = row.source
+      colors[p.id] = p.color
       if (code.includes(`"${p.id}"`) || code.includes(`'${p.id}'`)) for (const a of p.assets ?? []) named.add(a)
     }
     const assets: Record<string, string> = {}
@@ -774,7 +797,7 @@ export class Project extends DurableObject<Env> {
       const obj = await this.env.FILES.get(`projects/${this.projectId()}/assets/${name}`)
       if (obj) assets[name] = toBase64(new Uint8Array(await obj.arrayBuffer()))
     }
-    return { parts, assets }
+    return { parts, assets, colors }
   }
 
   /** The chat entry an outside agent's work shows in: the latest one if it's recent, or a new one. */

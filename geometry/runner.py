@@ -50,13 +50,17 @@ def inspect(
     parts: dict[str, str] | None = None,
     views: list | None = None,
     size: int = 420,
+    colors: dict[str, str] | None = None,
+    section: dict | None = None,
 ) -> dict:
     """Run analysis code. part(id) builds a project part from its source (exact B-rep, no STEP round trip).
 
     Returns stdout, `report` (any JSON value the code assigns) and, when it assigns `result`, its full-precision
-    metrics and a render of `views` (names from render.PRESETS or {name, dir, up}; [] for none).
+    metrics and a render of `views` (names from render.PRESETS or {name, dir, up}; [] for none). Parts are drawn
+    in their `colors` (part id → "#rrggbb"), other shapes in palette colours; `section` cuts the picture
+    (see scene.render_scene).
     """
-    return _spawn(_inspect_job, (code, assets or {}, parts or {}, views, size), timeout)
+    return _spawn(_inspect_job, (code, assets or {}, parts or {}, views, size, colors or {}, section), timeout)
 
 
 def _spawn(target, args: tuple, timeout: float) -> dict:
@@ -156,12 +160,12 @@ def _run_in(source: str, out: io.StringIO, assets: dict[str, bytes], files: str)
     }
 
 
-def _inspect_job(code: str, assets: dict[str, bytes], parts: dict[str, str], views, size: int, conn) -> None:
+def _inspect_job(code: str, assets: dict[str, bytes], parts: dict[str, str], views, size: int, colors: dict[str, str], section, conn) -> None:
     resource.setrlimit(resource.RLIMIT_AS, (MEMORY_LIMIT, MEMORY_LIMIT))
     out = io.StringIO()
     files = tempfile.mkdtemp(prefix="assets-")
     try:
-        conn.send(_inspect_in(code, out, assets, parts, views, size, files))
+        conn.send(_inspect_in(code, out, assets, parts, views, size, files, colors, section))
     except BaseException as exc:
         conn.send({"ok": False, "error": _describe(exc, code), "stdout": out.getvalue()[-20000:]})
     finally:
@@ -169,13 +173,13 @@ def _inspect_job(code: str, assets: dict[str, bytes], parts: dict[str, str], vie
         conn.close()
 
 
-def _inspect_in(code: str, out: io.StringIO, assets: dict[str, bytes], parts: dict[str, str], views, size: int, files: str) -> dict:
+def _inspect_in(code: str, out: io.StringIO, assets: dict[str, bytes], parts: dict[str, str], views, size: int, files: str, colors=None, section=None) -> dict:
     import json
 
     from build123d import Compound, Shape
 
-    from geometry.mesh import tessellate
-    from geometry.render import PRESETS, render_views
+    from geometry.render import PRESETS
+    from geometry.scene import render_scene
 
     for name, data in assets.items():
         with open(os.path.join(files, os.path.basename(name)), "wb") as f:
@@ -198,6 +202,8 @@ def _inspect_in(code: str, out: io.StringIO, assets: dict[str, bytes], parts: di
             try:
                 exec(compile(parts[pid], f"part {pid}", "exec"), ns)
                 loaded[pid] = _resolve(ns.get("result"), Compound, Shape)
+                # Moved copies and booleans keep the label, so the render can give the part its colour.
+                loaded[pid].label = pid
             except Exception as exc:
                 raise RuntimeError(f"part({pid!r}) failed to build: {type(exc).__name__}: {exc}") from None
         return loaded[pid]
@@ -208,21 +214,26 @@ def _inspect_in(code: str, out: io.StringIO, assets: dict[str, bytes], parts: di
     reply: dict = {"ok": True, "stdout": out.getvalue()[-20000:]}
     if namespace.get("report") is not None:
         reply["report"] = json.loads(json.dumps(namespace["report"], default=str))
-    if namespace.get("result") is None:
+    value = namespace.get("result")
+    if value is None:
         return reply
-    shape = _resolve(namespace["result"], Compound, Shape)
+    # {name: shape} labels the legend; metrics are for all of it.
+    shape = _resolve(list(value.values()) if isinstance(value, dict) else value, Compound, Shape)
     reply["metrics"] = _metrics(shape, precise=True)
     if views != [] and (shape.faces() or shape.edges()):
-        chosen = []
-        for v in views or ["iso", "front", "top", "right"]:
+        chosen = None if not views and section else []
+        for v in views or ([] if section else ["iso", "front", "top", "right"]):
             if isinstance(v, str):
                 if v not in PRESETS:
                     raise ValueError(f"Unknown view {v!r}. Named views: {', '.join(PRESETS)}; or pass {{name, dir: [x, y, z], up?}}.")
                 chosen.append(PRESETS[v])
             else:
                 chosen.append((str(v.get("name", "view")), tuple(v["dir"]), tuple(v.get("up") or (0.0, 0.0, 1.0))))
-        mesh = tessellate(shape)
-        reply["render"] = base64.b64encode(render_views(mesh, chosen[:6], max(200, min(int(size), 1000)))).decode()
+        png = render_scene(value, {k: v for k, v in (colors or {}).items() if k in loaded}, chosen[:6] if chosen else None, max(200, min(int(size), 1000)), section)
+        if png:
+            reply["render"] = base64.b64encode(png).decode()
+        elif section:
+            reply["stdout"] += "\n(The section plane leaves nothing on the kept side; no picture.)"
     return reply
 
 

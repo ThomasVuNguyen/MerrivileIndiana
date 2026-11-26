@@ -152,6 +152,16 @@ export function ChatMessage({ m, working, onRetry, onToggleNote }: { m: Message;
           <Prose text={m.text} />
         </div>
       )}
+      {m.images && m.images.length > 0 && (
+        <div className="msg-renders">
+          {m.images.map((a) => (
+            <a key={a.key} className="msg-render" href={a.url} target="_blank" rel="noreferrer" title="Open full size">
+              <img src={a.url} alt={a.caption ?? a.name ?? 'Render'} loading="lazy" />
+              {a.caption && <span>{a.caption}</span>}
+            </a>
+          ))}
+        </div>
+      )}
       {m.notes?.map((n) => (
         <NoteChip key={n.changeId} note={n} onToggle={onToggleNote && (() => onToggleNote(n.changeId))} />
       ))}

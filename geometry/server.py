@@ -1,5 +1,6 @@
 """Geometry service: POST /build runs a build123d script and returns the part; POST /inspect runs
-analysis code over a project's parts (measurements, checks, custom renders); POST /image/crop
+analysis code over a project's parts (measurements, checks, custom renders in part colours,
+section cuts); POST /image/crop
 crops a picture for the shop; POST /image/preview makes a JPEG preview (HEIC too);
 POST /video/frames and /video/copy read a video sent as the raw body; POST /convert turns a
 spreadsheet or document (raw body) into text; POST /python runs AI-written Python over files.
@@ -29,7 +30,7 @@ from geometry import images, office, runner, sandbox, video
 MAX_BODY = 64 * 1024 * 1024
 MAX_VIDEO = 5 * 1024**3
 # Reported by /health so a deploy can check the container runs the new image.
-VERSION = "2026-11-25.inspect"
+VERSION = "2026-11-26.renders"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -76,9 +77,13 @@ class Handler(BaseHTTPRequestHandler):
             assets = {str(k): base64.b64decode(v) for k, v in (body.get("assets") or {}).items()}
             parts = {str(k): str(v) for k, v in (body.get("parts") or {}).items()}
             views, size = body.get("views"), int(body.get("size", 420))
+            colors = {str(k): str(v) for k, v in (body.get("colors") or {}).items()}
+            section = body.get("section")
+            if section is not None and not isinstance(section, dict):
+                raise TypeError("section")
         except (ValueError, KeyError, TypeError, AttributeError):
-            return self._json(400, {"error": "expected JSON {code, parts?, assets?, views?, size?, timeout?}"})
-        self._json(200, runner.inspect(code, timeout, assets, parts, views, size))
+            return self._json(400, {"error": "expected JSON {code, parts?, assets?, views?, size?, colors?, section?, timeout?}"})
+        self._json(200, runner.inspect(code, timeout, assets, parts, views, size, colors, section))
 
     def _image(self, path: str) -> None:
         length = int(self.headers.get("Content-Length") or 0)

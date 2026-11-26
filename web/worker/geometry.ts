@@ -18,7 +18,7 @@ export class Video extends Container<Env> {
 // Must match VERSION in geometry/server.py. Change both when geometry/ changes:
 // a warm container keeps its old image, so the instance name carries the
 // version and a deploy starts fresh containers (see deploy.sh).
-export const GEOMETRY_VERSION = '2026-11-25.inspect'
+export const GEOMETRY_VERSION = '2026-11-26.renders'
 const INSTANCE = `geo-${GEOMETRY_VERSION}`
 
 /** POST to the geometry service: the local process in dev, the Container when deployed. */
