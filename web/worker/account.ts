@@ -128,6 +128,15 @@ export class Account extends DurableObject<Env> {
     return row ? toProject(row) : null
   }
 
+  renameProject(id: string, name: string) {
+    this.sql.exec('UPDATE projects SET name = ?, updated_at = ? WHERE id = ?', name, Date.now(), id)
+    return this.project(id)
+  }
+
+  removeProject(id: string) {
+    this.sql.exec('DELETE FROM projects WHERE id = ?', id)
+  }
+
   touchProject(id: string, patch: { parts?: number; thumb?: string }) {
     this.sql.exec(
       'UPDATE projects SET updated_at = ?, parts = coalesce(?, parts), thumb = coalesce(?, thumb) WHERE id = ?',

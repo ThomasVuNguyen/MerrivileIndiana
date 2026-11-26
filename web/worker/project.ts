@@ -6,6 +6,8 @@ import { endNote, runAgent } from './agent'
 import { accountOf } from './env'
 import type { Env } from './env'
 import { geometryFetch } from './geometry'
+import { runInspect } from './inspect'
+import type { View } from './inspect'
 import { Trace } from './langfuse'
 import type { Block, HistoryItem, ToolResult } from './llm'
 import { ModelError } from './llm'
@@ -16,6 +18,8 @@ import type { ShopApi } from './tools-shop'
 import { Threads } from './threads'
 
 const DEFAULT_COLOR = '#b9bcc2'
+/** Names the chat, and its entries, where an outside agent's (MCP) work shows. */
+const AGENT = 'Outside agent (MCP)'
 const DEFAULT_MATERIAL = 'Aluminum 6061'
 
 const Id = z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/)
@@ -63,6 +67,9 @@ type Build =
   | { ok: false; ms: number; error: BuildError; stdout: string }
 
 type AiEntry = Extract<ChatEntry, { role: 'ai' }>
+
+/** What an outside agent's tool call returns: text and pictures. */
+export type AgentReply = { content: Extract<Block, { type: 'text' | 'image' }>[]; isError?: boolean }
 
 /** One project: its parts, its chat, and the agent loop that edits them. */
 export class Project extends DurableObject<Env> {
@@ -238,7 +245,7 @@ export class Project extends DurableObject<Env> {
           afterRound: () => this.saveChat(index, entry),
           describe: (id) => entry.calls.find((c) => c.id === id)?.detail,
           execute: (call) =>
-            SHOP_TOOL_NAMES.has(call.name) ? this.shopTool(call, entry, index, shopCtx) : this.execute(call, entry, index, cfg.vision, abort.signal),
+            SHOP_TOOL_NAMES.has(call.name) ? this.shopTool(call, entry, index, shopCtx) : this.execute(call, { entry, index, thread }, cfg.vision, abort.signal),
         },
       })
       apiCalls = r.apiCalls
@@ -454,13 +461,14 @@ export class Project extends DurableObject<Env> {
     return lines.join('\n')
   }
 
-  private async execute(call: Extract<Block, { type: 'tool_call' }>, entry: AiEntry, index: number, vision: boolean, signal: AbortSignal): Promise<ToolResult> {
+  /** A part tool, from the chat's AI or an outside agent; `log` is the chat entry that shows it. */
+  private async execute(call: Extract<Block, { type: 'tool_call' }>, log: { entry: AiEntry; index: number; thread: string }, vision: boolean, signal: AbortSignal): Promise<ToolResult> {
     const state: CallState = { id: call.id, tool: call.name, detail: '', state: 'running' }
-    entry.calls.push(state)
+    log.entry.calls.push(state)
     const started = Date.now()
     const update = (patch: Partial<CallState>) => {
       Object.assign(state, patch)
-      this.toThread({ type: 'call', index, call: state })
+      this.toThread({ type: 'call', index: log.index, call: state }, log.thread)
     }
     const fail = (text: string, detail: string): ToolResult => {
       update({ state: 'error', detail, ms: Date.now() - started })
@@ -606,6 +614,184 @@ export class Project extends DurableObject<Env> {
     const content: Block[] = [{ type: 'text', text: `Built ${req.id} v${version} in ${(out.ms / 1000).toFixed(1)} s.\n${describe(built, false)}${out.warnings.length ? `\nWarnings:\n- ${out.warnings.join('\n- ')}` : ''}${out.stdout ? `\nstdout:\n${out.stdout}` : ''}` }]
     if (withImage) content.push({ type: 'image', mediaType: 'image/png', data: out.render })
     return { id: callId, content }
+  }
+
+  // ---------------------------------------------------------------- outside agents (MCP)
+
+  /**
+   * A tool call from an outside agent over MCP; the Worker checked that the user owns the project.
+   * What the agent changes shows in the project's "Outside agent (MCP)" chat, and the viewer updates live.
+   */
+  async mcp(who: { projectId: string; owner: string; email: string }, name: string, input: Record<string, unknown>): Promise<AgentReply> {
+    this.sql.exec("INSERT OR REPLACE INTO meta VALUES ('id', ?), ('owner', ?), ('email', ?)", who.projectId, who.owner, who.email)
+    const text = (t: string, isError = false) => ({ content: [{ type: 'text' as const, text: t }], ...(isError && { isError }) })
+    const id = String(input.part ?? input.id ?? '')
+    const signal = AbortSignal.timeout(280_000)
+
+    if (name === 'list_parts') {
+      const parts = this.parts()
+      if (!parts.length) return text('This project has no parts yet.')
+      return text(parts.map((p) => describe(p, false)).join('\n\n'))
+    }
+    if (name === 'read_part') {
+      const part = this.part(id)
+      if (!part) return text(`No part "${id}". Parts: ${this.parts().map((p) => p.id).join(', ') || 'none'}.`, true)
+      const all = this.sql
+        .exec<{ version: number; note: string; created_at: number }>('SELECT version, note, created_at FROM versions WHERE part = ? ORDER BY version DESC', id)
+        .toArray()
+      const versions = `versions (newest first): ${all.map((v) => `v${v.version} ${new Date(v.created_at).toISOString().slice(0, 16)} ${v.note || '-'}`).join('; ')}`
+      if (input.version === undefined) return text(`${describe(part)}\n${versions}`)
+      const row = this.sql.exec<{ source: string }>('SELECT source FROM versions WHERE part = ? AND version = ?', id, Number(input.version)).toArray()[0]
+      if (!row) return text(`${id} has no v${input.version}. ${versions}`, true)
+      return text(`${id} v${input.version} source:\n\`\`\`python\n${row.source}\n\`\`\`\n${versions}`)
+    }
+    if (name === 'read_chats') {
+      const thread = String(input.chat ?? '')
+      if (!thread) return text(this.threads.list().map((t) => `${t.id} "${t.title}" · ${t.messages} messages · ${new Date(t.updatedAt).toISOString().slice(0, 16)}`).join('\n') || 'No chats yet.')
+      if (!this.threads.has(thread)) return text(`No chat "${thread}".`, true)
+      const entries = this.threads.entries(thread).slice(-Number(input.last ?? 30))
+      return text(
+        entries
+          .map((e) => (e.role === 'user' ? `PERSON: ${e.text}${e.images?.length ? ` [${e.images.map((a) => a.name ?? 'file').join(', ')}]` : ''}` : `AI${e.model ? ` (${e.model})` : ''}: ${e.calls.map((c) => `[${c.tool} ${c.detail}]`).join(' ')} ${e.text}`))
+          .join('\n\n'),
+      )
+    }
+
+    // Everything below changes or builds something; it shows in the agent's chat.
+    const log = this.agentLog()
+    const finish = (line?: string) => {
+      if (line) log.entry.text += `${log.entry.text ? '\n' : ''}${line}`
+      log.entry.ms = Date.now() - log.entry.startedAt!
+      this.threads.save(log.thread, log.index, log.entry)
+      this.toThread({ type: 'chat', entry: log.entry, index: log.index }, log.thread)
+    }
+    const tell = (fact: string) => this.threads.append(log.thread, { role: 'user', content: [{ type: 'text', text: `[An outside agent (MCP) ${fact}]` }] })
+    try {
+      if (name === 'write_part' || name === 'edit_part' || name === 'set_part_hardware') {
+        const r = await this.execute({ type: 'tool_call', id: `mcp-${crypto.randomUUID().slice(0, 8)}`, name, input }, log, true, signal)
+        const part = this.part(id)
+        if (!r.isError && part && name !== 'set_part_hardware') {
+          const note = part.versions?.[0]?.note || 'built'
+          tell(`built ${id} v${part.version}: ${note}.`)
+          finish(`${part.name} v${part.version}: ${note}`)
+        } else finish()
+        await this.touch()
+        return { content: r.content as AgentReply['content'], isError: r.isError }
+      }
+      if (name === 'delete_part') {
+        const part = this.part(id)
+        if (!part) return text(`No part "${id}".`, true)
+        this.sql.exec('DELETE FROM parts WHERE id = ?', id)
+        this.sql.exec('DELETE FROM versions WHERE part = ?', id)
+        this.broadcast({ type: 'part_removed', id })
+        log.entry.calls.push({ id: `mcp-del-${id}`, tool: 'delete_part', detail: id, state: 'done', ms: 0 })
+        tell(`deleted part ${id}.`)
+        finish(`Deleted ${part.name}`)
+        await this.touch()
+        return text(`Deleted ${id} and its ${part.version} versions.`)
+      }
+      if (name === 'restore_part_version') {
+        const version = Number(input.version)
+        const row = this.sql.exec<{ source: string }>('SELECT source FROM versions WHERE part = ? AND version = ?', id, version).toArray()[0]
+        if (!this.part(id) || !row) return text(`No ${id} v${version}.`, true)
+        const state: CallState = { id: `mcp-restore-${id}-${version}`, tool: 'restore', detail: `${id} v${version}`, state: 'running' }
+        log.entry.calls.push(state)
+        const r = await this.build(state.id, { id, source: row.source, note: `Restored v${version}` }, true, signal, (patch) => {
+          Object.assign(state, patch)
+          this.toThread({ type: 'call', index: log.index, call: state }, log.thread)
+        }, Date.now())
+        if (!r.isError) tell(`restored ${id} to the source of v${version}; it's now v${this.part(id)!.version}.`)
+        finish(r.isError ? undefined : `Restored ${id} to v${version}`)
+        await this.touch()
+        return { content: r.content as AgentReply['content'], isError: r.isError }
+      }
+      if (name === 'import_step') {
+        const data = input.data as Uint8Array
+        const state: CallState = { id: `mcp-import-${Date.now()}`, tool: 'import_step', detail: `${input.name} · reading`, state: 'running' }
+        log.entry.calls.push(state)
+        this.toThread({ type: 'call', index: log.index, call: state }, log.thread)
+        const started = Date.now()
+        const r = await this.importPart(String(input.name), data, signal)
+        Object.assign(state, r.ok ? { state: 'done', detail: `${input.name} → ${r.part.id} v1 · ${r.part.metrics?.faces} faces` } : { state: 'error', detail: `${input.name} · failed` }, { ms: Date.now() - started })
+        if (r.ok) tell(`imported ${input.name} as part ${r.part.id}; its source reads it with import_step(asset("${r.part.assets?.[0]}")).`)
+        finish(r.ok ? `Imported ${input.name} as ${r.part.id}` : undefined)
+        await this.touch()
+        return r.ok
+          ? text(`Imported as part ${r.part.id} "${r.part.name}"; its source reads it with import_step(asset("${r.part.assets?.[0]}")).\n${describe(r.part, false)}`)
+          : text(`Couldn't import ${input.name}: ${r.why}.`, true)
+      }
+      if (name === 'inspect' || name === 'render_part') {
+        const code = name === 'inspect' ? String(input.code ?? '') : `result = part(${JSON.stringify(id)})`
+        if (name === 'render_part') {
+          const part = this.part(id)
+          if (!part?.files) return text(`No built part "${id}".`, true)
+          // The stored 4-view sheet when no particular view is asked for.
+          if (!input.views && !input.size) {
+            const obj = await this.env.FILES.get(part.files.render.replace('/api/files/', ''))
+            if (obj) return { content: [{ type: 'text', text: describe(part, false) }, { type: 'image', mediaType: 'image/png', data: toBase64(new Uint8Array(await obj.arrayBuffer())) }] }
+          }
+        }
+        const state: CallState = { id: `mcp-${name}-${Date.now()}`, tool: name, detail: name === 'inspect' ? 'running' : id, state: 'running' }
+        log.entry.calls.push(state)
+        this.toThread({ type: 'call', index: log.index, call: state }, log.thread)
+        const started = Date.now()
+        const r = await runInspect(this.env, { code, views: input.views as View[] | undefined, size: input.size as number | undefined, timeout: input.timeout as number | undefined, ...(await this.inspectInputs(code)) }, signal)
+        Object.assign(state, { state: r.isError ? 'error' : 'done', detail: name === 'inspect' ? r.summary : `${id} · ${r.summary}`, ms: Date.now() - started })
+        finish()
+        return { content: r.content as AgentReply['content'], isError: r.isError }
+      }
+      return text(`Unknown tool ${name}.`, true)
+    } catch (err) {
+      for (const c of log.entry.calls) if (c.state === 'running') c.state = 'error'
+      finish()
+      return text(`The tool failed: ${(err as Error).message}`, true)
+    }
+  }
+
+  /** A part's stored document, for exports. */
+  partDoc(id: string) {
+    return this.part(id)
+  }
+
+  /** Delete everything this project holds (the Account forgets it and the Worker clears its files). */
+  async destroy() {
+    for (const ws of this.ctx.getWebSockets()) ws.close(4404, 'project deleted')
+    await this.ctx.storage.deleteAll()
+  }
+
+  /** Each part's last good source for part(id), and the assets of the parts the code names. */
+  private async inspectInputs(code: string) {
+    const parts: Record<string, string> = {}
+    const named = new Set<string>([...code.matchAll(/asset\(\s*["']([\w.-]+)["']\s*\)/g)].map((m) => m[1]))
+    for (const p of this.parts()) {
+      const row = this.sql.exec<{ source: string }>('SELECT source FROM versions WHERE part = ? AND version = ?', p.id, p.version).toArray()[0]
+      if (!row) continue
+      parts[p.id] = row.source
+      if (code.includes(`"${p.id}"`) || code.includes(`'${p.id}'`)) for (const a of p.assets ?? []) named.add(a)
+    }
+    const assets: Record<string, string> = {}
+    for (const name of named) {
+      const obj = await this.env.FILES.get(`projects/${this.projectId()}/assets/${name}`)
+      if (obj) assets[name] = toBase64(new Uint8Array(await obj.arrayBuffer()))
+    }
+    return { parts, assets }
+  }
+
+  /** The chat entry an outside agent's work shows in: the latest one if it's recent, or a new one. */
+  private agentLog(): { thread: string; entry: AiEntry; index: number } {
+    let thread = this.meta('mcp_thread')
+    if (!this.threads.has(thread)) {
+      thread = this.threads.create(AGENT).id
+      this.sql.exec("INSERT OR REPLACE INTO meta VALUES ('mcp_thread', ?)", thread)
+    }
+    const entries = this.threads.entries(thread)
+    const last = entries.at(-1)
+    if (last?.role === 'ai' && last.model === AGENT && Date.now() - last.startedAt! - (last.ms ?? 0) < 10 * 60_000) return { thread, entry: last, index: entries.length - 1 }
+    const entry: AiEntry = { role: 'ai', text: '', calls: [], model: AGENT, startedAt: Date.now(), ms: 0 }
+    const index = this.threads.push(thread, entry)
+    this.toThread({ type: 'chat', entry, index }, thread)
+    this.broadcast({ type: 'threads', threads: this.threads.list() })
+    return { thread, entry, index }
   }
 
   // ---------------------------------------------------------------- storage

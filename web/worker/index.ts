@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { AnthropicAdapter } from './anthropic'
-import { COOKIE, sessionCookie, sessionToken } from './auth'
+import { checkLink, COOKIE, headerCredentials, sessionCookie, sessionToken } from './auth'
 import type { User } from './auth'
 import { accountOf, directoryOf } from './env'
 import { kindOf, MAX_UPLOAD, SINGLE_UPLOAD, toBase64 } from './files'
@@ -8,6 +8,7 @@ import { GEOMETRY_VERSION, geometryFetch } from './geometry'
 import type { Env } from './env'
 import { Trace } from './langfuse'
 import { ModelError } from './llm'
+import { handleMcp } from './mcp'
 import type { ApiCall, ModelConfig } from './llm'
 import { OpenAICompatAdapter } from './openai'
 import { videoFrames } from './video'
@@ -137,10 +138,22 @@ export default {
       return json({ ok: true }, 200, { 'set-cookie': `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0` })
     }
 
+    // Download links handed out to agents (export_part) work without signing in until they expire.
+    const link = path.match(/^\/api\/dl\/((?:projects|users)\/.+)$/)
+    if (link && (req.method === 'GET' || req.method === 'HEAD')) {
+      const q = new URL(req.url).searchParams
+      const key = decodeURIComponent(link[1])
+      if (!(await checkLink(directory, key, q.get('e') ?? '', q.get('s') ?? ''))) return new Response('This link expired or is wrong.', { status: 403 })
+      return serveFile(env, key, req)
+    }
+
+    // The browser has a session cookie; agents send their email and password with every request.
     const token = sessionToken(req)
-    const user: User | null = token ? await directory.user(token) : null
-    if (!user) return json({ error: 'Sign in first.' }, 401)
+    const creds = headerCredentials(req)
+    const user: User | null = creds ? await directory.signInCached(creds.email, creds.password) : token ? await directory.user(token) : null
+    if (!user) return json({ error: creds ? 'Wrong email or password.' : 'Sign in first.' }, 401)
     if (path === '/api/auth/me') return json(user)
+    if (path === '/api/mcp') return handleMcp(req, env, ctx, user, directory)
     const account = accountOf(env, user.id)
 
     // ------------------------------------------------------------ models

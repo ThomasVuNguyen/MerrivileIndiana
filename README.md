@@ -90,6 +90,24 @@ including retries, failures and stopped calls, and a span per tool call. Token u
 API; a call cut off by Stop logs an estimate flagged `outputTokensEstimated`. API keys, cookies and
 render images are never sent.
 
+## MCP server (outside agents)
+
+`POST /api/mcp` is an MCP server (Streamable HTTP, JSON responses; `worker/mcp.ts`) so agents
+such as Claude Code can do what the in-app AI does. They sign in on every request with
+`Authorization: Bearer <email>:<password>` (Basic auth works too), the same account as the web app.
+
+- Projects: `list_projects`, `create_project`, `rename_project`, `delete_project` (needs the exact name).
+- Parts: `list_parts`, `read_part` (any version), `write_part`, `edit_part`, `restore_part_version`,
+  `delete_part`, `set_part_hardware`, `import_step` (URL, text or base64), `read_chats`.
+- Review: `inspect` runs build123d code where `part("id")` rebuilds a part from source (exact B-rep),
+  prints measurements, returns `report` and full-precision metrics and renders of `result` from any
+  view (`/inspect` in the geometry service). `render_part` and `export_part` (signed `/api/dl/`
+  links, valid 1 h, no login).
+- Shop, memory and Library: the chat AI's tools (`worker/tools-shop.ts`), plus `list_memory`.
+
+What an agent changes appears live in the viewer and in the project's "Outside agent (MCP)" chat,
+whose history tells the in-app AI what changed. Each call is traced in Langfuse (tag `mcp`).
+
 ## Concept demo
 
 `#/p/actuator` is the static concept assembly from `tools/gen_models.py`

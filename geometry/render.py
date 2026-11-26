@@ -21,27 +21,45 @@ VIEWS = [
     ("top  (+Z)", (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
     ("right  (+X)", (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
 ]
+# Named views an inspection can ask for, besides an explicit direction.
+PRESETS = {
+    "iso": VIEWS[0],
+    "front": VIEWS[1],
+    "top": VIEWS[2],
+    "right": VIEWS[3],
+    "back": ("back  (+Y)", (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+    "left": ("left  (-X)", (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+    "bottom": ("bottom  (-Z)", (0.0, 0.0, -1.0), (0.0, -1.0, 0.0)),
+    "iso-back": ("iso back", (-1.0, 1.0, 0.8), (0.0, 0.0, 1.0)),
+    "iso-below": ("iso below", (1.0, -1.0, -0.8), (0.0, 0.0, 1.0)),
+}
 BASE = np.array([196, 200, 207], dtype=np.float64)
 EDGE = (30, 32, 36)
 
 
-def render_views(mesh: dict) -> bytes:
+def render_views(mesh: dict, views: list | None = None, cell: int = CELL) -> bytes:
+    """A sheet of views, two per row. `views` are (name, direction, up) tuples; default iso/front/top/right."""
+    views = views or VIEWS
     arrays = mesh["_arrays"]
     pos, tris, edges = arrays["positions"].astype(np.float64), arrays["indices"].astype(np.int64), arrays["edges"].astype(np.float64)
-    sheet = Image.new("RGB", (CELL * 2, CELL * 2), (255, 255, 255))
+    cols = 1 if len(views) == 1 else 2
+    rows = (len(views) + cols - 1) // cols
+    sheet = Image.new("RGB", (cell * cols, cell * rows), (255, 255, 255))
     lo, hi = pos.min(axis=0), pos.max(axis=0)
     size = hi - lo
-    for i, (name, d, up) in enumerate(VIEWS):
-        cell = _render_one(pos, tris, edges, np.array(d), np.array(up))
-        sheet.paste(cell, ((i % 2) * CELL, (i // 2) * CELL))
+    for i, (name, d, up) in enumerate(views):
+        img = _render_one(pos, tris, edges, np.array(d, dtype=np.float64), np.array(up, dtype=np.float64), cell=cell)
+        sheet.paste(img, ((i % cols) * cell, (i // cols) * cell))
     draw = ImageDraw.Draw(sheet)
     font = ImageFont.load_default()
-    for i, (name, _, _) in enumerate(VIEWS):
-        draw.text(((i % 2) * CELL + 10, (i // 2) * CELL + 8), name, fill=(90, 94, 100), font=font)
-    draw.line([(CELL, 0), (CELL, CELL * 2)], fill=(225, 227, 230))
-    draw.line([(0, CELL), (CELL * 2, CELL)], fill=(225, 227, 230))
+    for i, (name, _, _) in enumerate(views):
+        draw.text(((i % cols) * cell + 10, (i // cols) * cell + 8), name, fill=(90, 94, 100), font=font)
+    for c in range(1, cols):
+        draw.line([(cell * c, 0), (cell * c, cell * rows)], fill=(225, 227, 230))
+    for r in range(1, rows):
+        draw.line([(0, cell * r), (cell * cols, cell * r)], fill=(225, 227, 230))
     dims = f"bbox {size[0]:.1f} x {size[1]:.1f} x {size[2]:.1f} mm   X red  Y green  Z blue"
-    draw.text((10, CELL * 2 - 18), dims, fill=(90, 94, 100), font=font)
+    draw.text((10, cell * rows - 18), dims, fill=(90, 94, 100), font=font)
     buf = io.BytesIO()
     sheet.save(buf, "PNG", optimize=True)
     return buf.getvalue()
@@ -70,8 +88,8 @@ def _basis(d: np.ndarray, up: np.ndarray):
     return right, true_up, fwd
 
 
-def _render_one(pos, tris, edges, d, up, triad: bool = True) -> Image.Image:
-    W = CELL * SS
+def _render_one(pos, tris, edges, d, up, triad: bool = True, cell: int = CELL) -> Image.Image:
+    W = cell * SS
     right, true_up, fwd = _basis(d, up)
     center = (pos.min(axis=0) + pos.max(axis=0)) / 2
     project = lambda p: np.stack([(p - center) @ right, (p - center) @ true_up, (p - center) @ fwd], axis=-1)
@@ -115,7 +133,7 @@ def _render_one(pos, tris, edges, d, up, triad: bool = True) -> Image.Image:
                     run = None
     if triad:
         _triad(ImageDraw.Draw(img), right, true_up, W)
-    return img.resize((CELL, CELL), Image.LANCZOS)
+    return img.resize((cell, cell), Image.LANCZOS)
 
 
 def _raster(t: np.ndarray, rgb: np.ndarray, color: np.ndarray, zbuf: np.ndarray) -> None:

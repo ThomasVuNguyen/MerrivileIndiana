@@ -11,6 +11,8 @@ export type User = { id: string; email: string }
 /** Users and sessions. One instance; each user's data lives in their own Account object. */
 export class Directory extends DurableObject<Env> {
   private sql: SqlStorage
+  /** Agents sign in with every request; remember a good password briefly instead of hashing each time. */
+  private signedIn = new Map<string, { user: User; until: number }>()
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -18,7 +20,8 @@ export class Directory extends DurableObject<Env> {
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, hash TEXT NOT NULL,
         salt TEXT NOT NULL, iterations INTEGER NOT NULL, created_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL);`)
+      CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);`)
   }
 
   async signUp(email: string, password: string): Promise<User | { error: string }> {
@@ -39,6 +42,25 @@ export class Directory extends DurableObject<Env> {
     const hash = await derive(password, row ? unb64(row.salt) : new Uint8Array(16), row?.iterations ?? ITERATIONS)
     if (!row || !equal(hash, unb64(row.hash))) return null
     return { id: row.id, email }
+  }
+
+  /** signIn for agents that send the email and password on every request (MCP). */
+  async signInCached(email: string, password: string): Promise<User | null> {
+    const key = await sha256(`${email}\n${password}`)
+    const hit = this.signedIn.get(key)
+    if (hit && hit.until > Date.now()) return hit.user
+    const user = await this.signIn(email, password)
+    if (user) this.signedIn.set(key, { user, until: Date.now() + 10 * 60_000 })
+    return user
+  }
+
+  /** The key that signs download links (made once). */
+  secret(): string {
+    const row = this.sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'link-secret'").toArray()[0]
+    if (row) return row.v
+    const v = b64(crypto.getRandomValues(new Uint8Array(32)))
+    this.sql.exec("INSERT INTO meta VALUES ('link-secret', ?)", v)
+    return v
   }
 
   async createSession(userId: string): Promise<{ token: string; maxAge: number }> {
@@ -93,4 +115,37 @@ export function sessionToken(req: Request) {
 export function sessionCookie(req: Request, token: string, maxAge: number) {
   const secure = new URL(req.url).protocol === 'https:' ? '; Secure' : ''
   return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`
+}
+
+/** Agents send `Authorization: Bearer email:password` (or Basic) instead of a session cookie. */
+export function headerCredentials(req: Request): { email: string; password: string } | null {
+  const [scheme, value] = (req.headers.get('authorization') ?? '').split(/\s+/, 2)
+  if (!value) return null
+  let pair = value
+  if (/^basic$/i.test(scheme)) {
+    try {
+      pair = atob(value)
+    } catch {
+      return null
+    }
+  } else if (!/^bearer$/i.test(scheme)) return null
+  const at = pair.indexOf(':')
+  if (at < 1) return null
+  return { email: pair.slice(0, at).trim().toLowerCase(), password: pair.slice(at + 1) }
+}
+
+/** A link to a stored file that works without signing in until it expires. */
+export async function signedLink(directory: DurableObjectStub<Directory>, origin: string, key: string, ttlSeconds = 3600) {
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds
+  return `${origin}/api/dl/${key}?e=${exp}&s=${await hmac(await directory.secret(), `${key}\n${exp}`)}`
+}
+
+export async function checkLink(directory: DurableObjectStub<Directory>, key: string, exp: string, sig: string) {
+  if (!(Number(exp) > Date.now() / 1000)) return false
+  return equal(new TextEncoder().encode(await hmac(await directory.secret(), `${key}\n${exp}`)), new TextEncoder().encode(sig))
+}
+
+async function hmac(secret: string, text: string) {
+  const key = await crypto.subtle.importKey('raw', unb64(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  return b64url(new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(text))))
 }
