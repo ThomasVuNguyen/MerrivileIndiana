@@ -82,7 +82,7 @@ export class Assemblies {
     for (const a of all) {
       if (!uses(a, new Set([a.id]))) continue
       const stale = [...(a.stale ?? []).filter((s) => s.ref !== `part:${partId}`), { ref: `part:${partId}`, version }]
-      this.store({ ...a, stale })
+      this.h.broadcast({ type: 'assembly', assembly: this.store({ ...a, stale }) })
       lines.push(`assembly ${a.id} uses ${partId}; it keeps its placement and check until its next save (place with instances: [] re-places it; check_assembly previews)`)
     }
     return lines

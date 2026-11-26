@@ -683,8 +683,8 @@ export class Project extends DurableObject<Env> {
         if (done.has(p.id) || !via.length) continue
         done.add(p.id)
         next.push(p.id)
-        // Quietly: the viewer follows parts that are broadcast, and nothing it shows changed.
-        this.savePart({ ...p, stale: [...(p.stale ?? []).filter((s) => s.part !== id), { part: id, version }] }, false)
+        // The viewer shows the badge; it only follows parts to a new version.
+        this.savePart({ ...p, stale: [...(p.stale ?? []).filter((s) => s.part !== id), { part: id, version }] })
         lines.push(`${p.id} uses ${id}${via.includes(id) ? '' : ` through ${via.join(', ')}`} and is now out of date; rebuild it with edit_part edits: []`)
       }
       changed = next
