@@ -170,7 +170,7 @@ that moves. The in-app AI and outside agents have the same tools (`worker/tools-
   `upcoming: "hidden"`); `exploded` and `explain` start assembled. A step has a title and text,
   `add` / `remove`, `motions`, `camera` (view, frame, zoom, orbit), `focus`, `labels`, `hardware`
   (shop item ids filled in with name and picture), `tools` and a `warning`. `explode: {axis?,
-  distance?, stagger?, back?}` is shorthand for motions out from the assembly's centre.
+  distance?, stagger?, back?}` is shorthand for motions out from the assembly's centre (with `axis`, all one way along it).
 - **Poses** are relative to where an instance sits assembled, in the assembly's frame
   (`GuidePose` in `shared/protocol.ts`). The tools also take `{offset?, along: "<inst>.<datum>",
   distance?, turn?: {about: "<inst>.<datum>" | axis + pivot, deg}}`; every save resolves them

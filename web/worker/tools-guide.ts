@@ -10,7 +10,7 @@ const VEC3 = { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 
 const VIEW_NAMES = ['iso', 'front', 'top', 'right', 'back', 'left', 'bottom', 'iso-back', 'iso-below']
 const PATH = { type: 'string', description: 'An instance path: "lid", or "camera/lens" inside a sub-assembly (a sub-assembly path brings everything in it).' }
 const ADDRESS = { type: 'string', description: '"<instance>.<datum>", e.g. "base.hinge_axis" or "camera/lens.optical_axis".' }
-const EASE = { type: 'string', enum: ['linear', 'in', 'out', 'in-out', 'back'], description: 'Default in-out; back overshoots a little and settles.' }
+const EASE = { type: 'string', enum: ['linear', 'in', 'out', 'in-out', 'back'], description: 'Default in-out; back overshoots a little and settles (not for parts landing on another: the overshoot goes into it).' }
 
 const POSE_OBJECT = {
   type: 'object',
@@ -52,7 +52,7 @@ const EXPLODE = {
   properties: {
     instances: { type: 'array', items: PATH, description: 'Default: every top-level instance shown, except the ground.' },
     distance: { type: 'number', minimum: 0, description: 'mm for the outermost one (default 40% of the assembly\'s largest size).' },
-    axis: { ...VEC3, description: 'Only along this axis (each to its own side of the centre), e.g. [0, 0, 1] for a stack.' },
+    axis: { ...VEC3, description: 'Everything moves this way, further along it going further: [0, 0, 1] lifts a stack apart off its ground.' },
     stagger: { type: 'number', minimum: 0, description: 'Seconds between starts (default 0.15).' },
     duration: { type: 'number', minimum: 0, description: 'Seconds per motion (default 1).' },
     ease: EASE,
@@ -199,7 +199,7 @@ export const GUIDE_TOOL_NAMES = new Set(GUIDE_TOOLS.map((t) => t.name))
 /** How to write guides and read the BOM, for both the in-app prompt and the MCP instructions. */
 export const GUIDE_NOTES = `# Guides and BOM
 - A guide animates an assembly; the person watches it play in the viewer, live as you save. Pick what fits what they need to understand: build (starts empty, each step adds instances, like a Lego booklet: to make it), exploded (starts assembled, pulls it apart: to see every piece), explain (starts assembled: how it works, a hinge opening, what touches what). write_guide, then edit_guide by step number (from 1).
-- Order a build the way hands would: the ground first, then inside-out, each subassembly before it goes in; one idea per step. Bring each part in from where it really comes: from {along: "base.top", distance: 40} drops it along the datum it seats on; via [{along: ..., distance: ...}] lifts it clear before it slides or turns in; turn {about: "base.hinge", deg: -90} swings it on a hinge. Stagger repeated parts with delay. Per step: camera (view, frame, zoom) so what changes fills the picture, focus on what matters (the rest fades), labels on what to notice ("this side up", "tab into slot"), hardware with shop item ids (search_shop), tools, and a warning for fragile or risky things (ribbon cables, ESD, overtightening). explode: {} pulls everything out from the centre in one step.
+- Order a build the way hands would: the ground first, then inside-out, each subassembly before it goes in; one idea per step. Bring each part in from where it really comes: from {along: "base.top", distance: 40} drops it along the datum it seats on; via [{along: ..., distance: ...}] lifts it clear before it slides or turns in; turn {about: "base.hinge", deg: -90} swings it on a hinge. Stagger repeated parts with delay. Per step: camera (view, frame, zoom) so what changes fills the picture, focus on what matters (the rest fades), labels on what to notice ("this side up", "tab into slot"), hardware with shop item ids (search_shop), tools, and a warning for fragile or risky things (ribbon cables, ESD, overtightening). explode: {} pulls everything out from the centre in one step; explode: {axis: [0, 0, 1]} lifts a stack apart.
 - Every save checks each motion's path: path_clash means it passes through another instance on the way (when, where, how much). Fix it with a better approach direction, a via that lifts it clear, another step order, or by adding the blocking part later. Also missing (refused), added_twice, not_present, never_added, ends_apart, and hardware (the steps' hardware against the assembly's joining hardware). Look at the sheet (each step's end from its camera; dark arrows show motion); render_guide shows other moments and views.
 - set_assembly_hardware records what joins the instances (screws between parts, nuts, standoffs); parts keep their own (set_part_hardware). bill_of_materials counts parts, components and hardware with sub-assemblies flattened, and shows shop stock (on hand, short, to buy) without taking it off: projects are plans. One assembly per variant.`
 

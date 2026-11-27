@@ -483,6 +483,9 @@ function explode(e: NonNullable<StepInput['explode']>, ctx: Ctx, shown: Set<stri
   const size = Math.max(...all.max.map((v, k) => v - all.min[k]))
   const ids = e.instances ?? [...new Set(ctx.leaves.filter((l) => shown.has(l.path)).map((l) => l.path.split('/')[0]))].filter((p) => p !== ctx.doc.ground)
   const axis = e.axis ? normalize(e.axis) : null
+  // Along an axis everything goes the same way, further along it going further: a stack lifts
+  // apart off its ground instead of half of it sinking through the ground.
+  const low = axis ? Math.min(...[ctx.doc.ground, ...ids].filter((p) => ctx.paths.has(p)).map((p) => dot(centreOf(p, ctx), axis))) : 0
   const out = ids
     .filter((p) => {
       if (!ctx.paths.has(p)) errors.push(`${where} explode: no instance "${p}"`)
@@ -490,10 +493,7 @@ function explode(e: NonNullable<StepInput['explode']>, ctx: Ctx, shown: Set<stri
     })
     .map((p) => {
       const v = sub(centreOf(p, ctx), centre)
-      if (axis) {
-        const s = dot(v, axis)
-        return { p, dir: s >= 0 ? axis : scale(axis, -1), mag: Math.abs(s) }
-      }
+      if (axis) return { p, dir: axis, mag: dot(centreOf(p, ctx), axis) - low }
       const mag = Math.hypot(...v)
       return { p, dir: mag > 1e-6 ? scale(v, 1 / mag) : ([0, 0, 1] as Vec3), mag }
     })
