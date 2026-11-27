@@ -336,6 +336,7 @@ function KeyboardControls() {
       if (t.closest('textarea, [contenteditable], input:not([type=range]):not([type=color])')) return
       if (e.key === 'f') ws.fit()
       else if (e.key === 's') ws.setSection((x) => !x)
+      else if (ws.liveAsm && ws.player.guide && guideKeys(e, ws)) return
       else if (ws.liveAsm) liveKeys(e, ws)
       else if (e.key === 'e') ws.setExploded((x) => !x)
       else if (e.key === ' ' && ws.view === 'assembly') {
@@ -354,6 +355,28 @@ function KeyboardControls() {
     return () => window.removeEventListener('keydown', onKey)
   }, [ws, gl])
   return null
+}
+
+/** Playing a guide: ← → steps, Space play or pause, Home the first step, Esc a finding then the guide. */
+function guideKeys(e: KeyboardEvent, ws: ReturnType<typeof useWorkspace>) {
+  const p = ws.player
+  const n = p.guide!.steps.length
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    const to = p.step + (e.key === 'ArrowLeft' ? -1 : 1)
+    if (to >= 0 && to < n) {
+      p.goStep(to)
+      p.setPlaying(true)
+    }
+  } else if (e.key === ' ') p.togglePlay()
+  else if (e.key === 'Home') {
+    p.goStep(0)
+    p.setPlaying(true)
+  } else if (e.key === 'Escape') {
+    if (p.mark !== null) p.setMark(null)
+    else p.close()
+  } else return false
+  e.preventDefault()
+  return true
 }
 
 /** In a live assembly: Esc steps back out (finding → isolation → pick), H hides the pick, Enter opens its part. */

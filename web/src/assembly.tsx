@@ -6,6 +6,7 @@ import type { AssemblyDoc, AssemblyInstance, Finding, SnapResult } from '../shar
 import { ago, FINDING_LABEL, fmt, instanceAt, lookOf, refKind, sortedFindings, warningsFor, within } from './asm'
 import { useMeshProgress } from './brep'
 import { SWATCHES } from './data'
+import { BomFold, GuidesFold } from './guides'
 import { Fold, Icon } from './ui'
 import { useWorkspace } from './workspace'
 
@@ -59,6 +60,8 @@ export function AssemblySheet({ doc }: { doc: AssemblyDoc }) {
       ) : null}
       {loading.length > 0 && <LoadingLine doc={doc} loading={loading} />}
       <Check doc={doc} />
+      <GuidesFold doc={doc} />
+      <BomFold doc={doc} />
       <Fold name="Instances" count={doc.instances.length} part={doc.id}>
         {isolatedName && (
           <button className="link asm-showall" onClick={() => ws.setIsolated(null)}>
