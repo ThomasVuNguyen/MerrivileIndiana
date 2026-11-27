@@ -137,6 +137,7 @@ export class Project extends DurableObject<Env> {
         project: info,
         parts: this.parts(),
         assemblies: this.asm.list(),
+        guides: [],
         chat: this.threads.entries(thread),
         running: !!this.abort,
         threads: this.threads.list(),

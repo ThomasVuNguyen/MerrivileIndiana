@@ -381,9 +381,167 @@ export type AssemblyDoc = {
   files?: { render: string; thumb: string }
   /** Parts or sub-assemblies it uses that changed since this placement; the next save re-places it. */
   stale?: { ref: string; version?: number }[]
+  /** Hardware that joins its instances (screws, nuts, standoffs), set by the AI; parts' own hardware is on the parts. */
+  hardware?: PartHardware[]
   /** Newest first. */
   versions?: { version: number; note: string; at: number }[]
   updatedAt: number
+}
+
+// ---------------------------------------------------------------- guides and BOM
+
+export type ViewName = 'iso' | 'front' | 'top' | 'right' | 'back' | 'left' | 'bottom' | 'iso-back' | 'iso-below'
+
+/**
+ * Where an instance is relative to where it sits assembled, in the assembly's frame: turned `deg`
+ * about `axis` through `pivot`, then moved by `offset` (mm). `{offset: [0, 0, 0]}` is assembled.
+ * Saved guides hold resolved poses; the tools also take datum references (web/shared/guide.ts).
+ */
+export type GuidePose = { offset: Vec3; turn?: { axis: Vec3; deg: number; pivot: Vec3 } }
+
+export type GuideEase = 'linear' | 'in' | 'out' | 'in-out' | 'back'
+
+/** One instance moving during a step: from, through `via` (equal time per leg), to. */
+export type GuideMotion = {
+  /** An instance path ("pi", "camera/lens"); a sub-assembly moves with everything in it. */
+  instance: string
+  from: GuidePose
+  to: GuidePose
+  via: GuidePose[]
+  /** Seconds from the step's start. */
+  delay: number
+  duration: number
+  ease: GuideEase
+}
+
+export type GuideCamera = {
+  /** The side it looks from: a named view or a direction (it looks along -dir). */
+  view?: ViewName | { dir: Vec3; up?: Vec3 }
+  /** Instance paths to frame; default what the step adds and moves, else everything shown. */
+  frame?: string[]
+  /** > 1 closer, < 1 further. */
+  zoom?: number
+  /** Degrees the camera turns about its up axis over the step. */
+  orbit?: number
+}
+
+/** A callout: text on a point in the assembly's frame, from an instance, a datum or a point (`at` as written). */
+export type GuideLabel = { text: string; at: string | Vec3; point: Vec3 }
+
+/** Hardware a step uses; itemId is a shop item. */
+export type GuideHardware = { qty: number; name: string; itemId?: string; image?: string; note?: string }
+
+/**
+ * One step: what appears, what moves, where to look, and what to tell the person. Instances keep
+ * the pose a step leaves them in until a later step moves them.
+ */
+export type GuideStep = {
+  title: string
+  /** What to do and why: short paragraphs; **bold** and lists work. */
+  text?: string
+  /** Instance paths that appear in this step and stay (a sub-assembly brings all of it). */
+  add: string[]
+  /** Instance paths that fade out over this step and stay gone. */
+  remove: string[]
+  motions: GuideMotion[]
+  camera?: GuideCamera
+  /** Drawn normally; everything else shown fades. Unset: all drawn normally. */
+  focus?: string[]
+  labels: GuideLabel[]
+  hardware: GuideHardware[]
+  tools: string[]
+  /** A caution shown with the step. */
+  warning?: string
+}
+
+export type GuideFindingKind =
+  | 'path_clash' // a moving instance passes through another one on its way (not counting where they end)
+  | 'never_added' // a build guide ends without adding this instance
+  | 'missing' // the guide names an instance or datum the assembly doesn't have
+  | 'added_twice' // added while already shown
+  | 'not_present' // moved, focused or labelled while not shown
+  | 'ends_apart' // a build guide's last step leaves something away from its assembled pose
+  | 'hardware' // the steps' hardware doesn't add up to the assembly's joining hardware
+
+export type GuideFinding = {
+  kind: GuideFindingKind
+  severity: 'warning' | 'info'
+  /** 0-based step index. */
+  step?: number
+  /** Seconds into the step (path clashes: the first sample where they touch). */
+  t?: number
+  instances: string[]
+  message: string
+  value?: number
+  unit?: 'mm³' | 'mm'
+  /** In the assembly's frame, at that moment. */
+  at?: Vec3
+}
+
+export type GuideReport = { at: number; ms: number; warnings: number; findings: GuideFinding[]; partial: boolean }
+
+/**
+ * An animated guide for an assembly, written by the AI: a build guide starts empty and each step
+ * adds instances; an exploded view or an explanation starts assembled. The viewer plays it; the
+ * geometry service checks every motion for clashes along its path and draws a sheet of the steps.
+ */
+export type GuideDoc = {
+  /** Unique in the project. */
+  id: string
+  assembly: string
+  name: string
+  kind: 'build' | 'exploded' | 'explain'
+  summary?: string
+  /** How instances not added yet show in a build guide. */
+  upcoming: 'hidden' | 'ghost'
+  steps: GuideStep[]
+  /** The assembly version it was checked against; a newer save means the check is out of date. */
+  assemblyVersion: number
+  report?: GuideReport
+  /** A sheet with every step's end, and its thumbnail. */
+  files?: { sheet: string; thumb: string }
+  version: number
+  /** Newest first. */
+  versions?: { version: number; note: string; at: number }[]
+  updatedAt: number
+}
+
+/**
+ * A line of an assembly's bill of materials. Hardware counts come from the parts' hardware times how
+ * many of each part are placed, plus the assembly's joining hardware. Stock is shown, never taken
+ * off: projects are plans.
+ */
+export type BomLine = {
+  kind: 'part' | 'component' | 'hardware'
+  /** The part or component id; for hardware, the shop item id when it's one. */
+  ref?: string
+  name: string
+  qty: number
+  /** Where the count comes from: "base × 2 (4 each)", "joining hardware". */
+  from: string[]
+  /** Parts: material and mass per piece. */
+  material?: string
+  massG?: number
+  /** Components. */
+  vendor?: string
+  partNumber?: string
+  link?: string
+  /** Hardware: the shop's tier, picture and price, and what's on hand. */
+  kindLabel?: string
+  tier?: Tier
+  image?: string
+  price?: string
+  have?: number
+  /** How many more are needed than are on hand. */
+  short?: number
+}
+
+export type Bom = {
+  assembly: string
+  version: number
+  lines: BomLine[]
+  totals: { parts: number; components: number; hardware: number; toBuy: number; massG: number }
+  notes: string[]
 }
 
 /** One of the chats in the Shop or in a project; they share the shop, memory, Library and parts. */
@@ -394,7 +552,7 @@ export type ThreadInfo = { id: string; title: string; updatedAt: number; message
  * positions in it. `thread` "" is a new chat that starts with its first message.
  */
 export type ServerEvent =
-  | { type: 'snapshot'; project: ProjectInfo; parts: PartDoc[]; assemblies: AssemblyDoc[]; chat: ChatEntry[]; running: boolean; threads: ThreadInfo[]; thread: string }
+  | { type: 'snapshot'; project: ProjectInfo; parts: PartDoc[]; assemblies: AssemblyDoc[]; guides: GuideDoc[]; chat: ChatEntry[]; running: boolean; threads: ThreadInfo[]; thread: string }
   | { type: 'shop-snapshot'; items: ShopItem[]; tools: ShopTool[]; chat: ChatEntry[]; running: boolean; threads: ThreadInfo[]; thread: string }
   | { type: 'thread'; thread: string; chat: ChatEntry[] }
   | { type: 'threads'; threads: ThreadInfo[] }
@@ -405,6 +563,8 @@ export type ServerEvent =
   | { type: 'part_removed'; id: string }
   | { type: 'assembly'; assembly: AssemblyDoc }
   | { type: 'assembly_removed'; id: string }
+  | { type: 'guide'; guide: GuideDoc }
+  | { type: 'guide_removed'; id: string }
   | { type: 'running'; running: boolean; thread?: string }
   | { type: 'notes'; index: number; notes: ChangeNote[] }
   | { type: 'shop'; items: ShopItem[]; tools: ShopTool[] }
