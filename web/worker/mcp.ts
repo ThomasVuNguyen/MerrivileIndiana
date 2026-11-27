@@ -14,6 +14,7 @@ import { blockForLog, Trace } from './langfuse'
 import type { Block } from './llm'
 import { SYSTEM, TOOLS } from './prompt'
 import { ASSEMBLY_TOOLS, COMPONENT_TOOL_NAMES, COMPONENT_TOOLS } from './tools-assembly'
+import { GUIDE_NOTES, GUIDE_TOOLS } from './tools-guide'
 import { runShopTool, SHOP_TOOLS } from './tools-shop'
 import type { ShopApi } from './tools-shop'
 
@@ -41,7 +42,10 @@ const INSTRUCTIONS = `Merrivile is a CAD app. Parts are build123d 0.13 Python sc
 - Workflow: 1) publish datums on your parts (datums = {...} next to result; see Script rules); 2) import the components; 3) write_assembly with instances snapped datum to datum: snap [{own, to: "<instance>.<datum>", offset?, flip?, spin?}]; 4) read the report and the picture; 5) fix the design (place, edit_part, set_component_datums) and save again. Don't compute placements by hand: snap. pos/rot (Pos * Rot, degrees, X then Y then Z) is the fallback.
 - Snaps: plane → plane puts faces together (normals opposed; flip: aligned), offset along the target normal, spin about it. axis → axis is coaxial (directions aligned; flip: opposed), offset slides along it, spin turns about it. pattern → pattern best-fits hole patterns (Kabsch) and reports the worst point's residual; a symmetric pattern fits several ways, so say which with spin. point → point. Two snaps per instance where one leaves freedom: a lens's optical_axis → cell.optical_axis, then seat → cell.seat. The ground (first instance, or ground: true) stays put. Sub-assemblies: own "<child>.<datum>", to "<sub>/<child>.<datum>".
 - Every save checks: clash (volume mm³, centroid, box; drawn red), tight_gap (under the clearance, default 0.2 mm), contact, floating (not connected to the ground), keepout, pattern_fit (> 0.05 mm), snap_conflict, unresolved (a missing datum or instance: the instance keeps its last placement and is reported, never silently moved), and requirements. Findings never block a save. For optics declare requirements: {kind: "coaxial", a: "lens.optical_axis", b: "cell.optical_axis", tol_mm?, tol_deg?}, parallel, distance (default tolerances 0.02 mm, 0.05°); every save measures them.
-- Instances follow their part's latest good version (version pins one); a part change marks its assemblies out of date: re-save with place instances: []. check_assembly re-checks without saving (other clearance, extra requirements, time_limit). render_assembly shows the saved assembly (views, section). swap_component replaces a component and reports what no longer fits. duplicate_assembly tries a variant. export_assembly gives a STEP of the whole assembly with named instances. In inspect, assembly("id") is {instance name: placed shape} as last saved, ready to measure or draw.
+- Instances follow their part's latest good version (version pins one); a part change marks its assemblies out of date: re-save with place instances: []. check_assembly re-checks without saving (other clearance, extra requirements, time_limit). render_assembly shows the saved assembly (views, section). swap_component replaces a component and reports what no longer fits. duplicate_assembly tries a variant. export_assembly gives a STEP of the whole assembly with named instances. delete_assembly removes one (and its guides). In inspect, assembly("id") is {instance name: placed shape} as last saved, ready to measure or draw.
+
+${GUIDE_NOTES}
+- Guide sheets and render_guide pictures show in the "Outside agent (MCP)" chat like other renders; the person also watches the guide play in the viewer.
 
 ${SYSTEM.slice(SYSTEM.indexOf('# Script rules'))}`
 
@@ -89,16 +93,17 @@ function inProject(name: string, description?: string): Spec {
   return { name, description: description ?? t.description, inputSchema: { ...s, properties: { project: PROJECT, ...s.properties }, required: ['project', ...s.required] } }
 }
 
-/** An assembly tool, inside a project. */
+/** An assembly or guide tool, inside a project. */
 function assemblyTool(name: string): Spec {
-  const t = ASSEMBLY_TOOLS.find((x) => x.name === name)!
+  const t = [...ASSEMBLY_TOOLS, ...GUIDE_TOOLS].find((x) => x.name === name)!
   const s = t.schema as { properties: Record<string, unknown>; required?: string[] }
-  const properties = name === 'render_assembly' ? { ...s.properties, section: SECTION, caption: CAPTION } : { ...s.properties, ...(s.properties.section ? { section: SECTION } : {}) }
+  const properties = name === 'render_assembly' ? { ...s.properties, section: SECTION, caption: CAPTION } : name === 'render_guide' ? { ...s.properties, caption: CAPTION } : { ...s.properties, ...(s.properties.section ? { section: SECTION } : {}) }
   return {
     name,
     description: t.description,
     inputSchema: { ...s, properties: { project: PROJECT, ...properties }, required: ['project', ...(s.required ?? [])] },
-    ...(['read_assembly', 'list_assemblies', 'render_assembly', 'check_assembly'].includes(name) && { annotations: READ }),
+    ...(['read_assembly', 'list_assemblies', 'render_assembly', 'check_assembly', 'bill_of_materials', 'read_guide', 'list_guides', 'render_guide'].includes(name) && { annotations: READ }),
+    ...(['delete_assembly', 'delete_guide'].includes(name) && { annotations: { destructiveHint: true } }),
   }
 }
 
@@ -149,6 +154,7 @@ const PROJECT_TOOLS: Spec[] = [
     ),
   },
   ...ASSEMBLY_TOOLS.map((t) => assemblyTool(t.name)),
+  ...GUIDE_TOOLS.map((t) => assemblyTool(t.name)),
   {
     name: 'export_assembly',
     description: "A download link (valid 1 hour, no login) to the assembly as last saved, as one STEP: each instance a named shape at its place, sub-assemblies nested. curl -o works directly.",

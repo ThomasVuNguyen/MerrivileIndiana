@@ -16,7 +16,21 @@ import type { Block } from './llm'
 export const MAX_COMPONENT = 95 * 1024 ** 2
 
 /** What a geometry call needs for component("id"), and what assemblies need to place and check it. */
-export type ComponentRef = { id: string; name: string; hash: string; key: string; mesh: string; names: string[]; datums: Record<string, Datum>; keepouts: KeepOut[] }
+export type ComponentRef = {
+  id: string
+  name: string
+  hash: string
+  key: string
+  mesh: string
+  names: string[]
+  datums: Record<string, Datum>
+  keepouts: KeepOut[]
+  /** For guides (where its centre is) and the bill of materials. */
+  outline?: { min: Vec3; max: Vec3 }
+  vendor?: string
+  partNumber?: string
+  link?: string
+}
 
 /** The Account object's component methods (RPC). */
 export interface ComponentApi {
@@ -101,7 +115,20 @@ export function componentsIn(code: string): string[] {
 }
 
 export function refOf(doc: ComponentDoc, names: string[] = []): ComponentRef {
-  return { id: doc.id, name: doc.name, hash: doc.hash, key: keyOf(doc.files.brep), mesh: doc.files.mesh, names, datums: doc.datums, keepouts: doc.keepouts }
+  return {
+    id: doc.id,
+    name: doc.name,
+    hash: doc.hash,
+    key: keyOf(doc.files.brep),
+    mesh: doc.files.mesh,
+    names,
+    datums: doc.datums,
+    keepouts: doc.keepouts,
+    outline: doc.outline,
+    ...(doc.vendor && { vendor: doc.vendor }),
+    ...(doc.partNumber && { partNumber: doc.partNumber }),
+    ...(doc.link && { link: doc.link }),
+  }
 }
 
 // ---------------------------------------------------------------- import

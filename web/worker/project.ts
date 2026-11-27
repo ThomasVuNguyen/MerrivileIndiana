@@ -1,9 +1,11 @@
 import { DurableObject } from 'cloudflare:workers'
 import { z } from 'zod'
 import { MATERIALS } from '../shared/protocol'
-import type { Attachment, BuildError, CallState, ChangeNote, ChatEntry, ClientEvent, Datum, FaceRef, PartDoc, PartHardware, PartMetrics, ServerEvent } from '../shared/protocol'
+import type { Attachment, BuildError, CallState, ChangeNote, ChatEntry, ClientEvent, Datum, FaceRef, PartDoc, PartMetrics, ServerEvent, ShopItem } from '../shared/protocol'
 import { endNote, runAgent } from './agent'
 import { Assemblies } from './assemblies'
+import type { AssemblyOutcome } from './assemblies'
+import { resolveHardware } from './bom'
 import { componentsIn, datumLine, geometryJson, runComponentTool } from './components'
 import type { ComponentRef, ComponentToolApi } from './components'
 import { accountOf } from './env'
@@ -15,7 +17,9 @@ import type { Block, HistoryItem, ToolResult } from './llm'
 import { ModelError } from './llm'
 import { SYSTEM, TOOLS } from './prompt'
 import { attachmentBlocks, hydrator, labels, MODEL_STEP } from './files'
+import { Guides } from './guides'
 import { ASSEMBLY_TOOL_NAMES, COMPONENT_TOOL_NAMES } from './tools-assembly'
+import { GUIDE_TOOL_NAMES } from './tools-guide'
 import { runShopTool, SHOP_TOOL_NAMES } from './tools-shop'
 import type { ShopApi } from './tools-shop'
 import { Threads } from './threads'
@@ -82,6 +86,7 @@ export class Project extends DurableObject<Env> {
   private sql: SqlStorage
   private threads: Threads
   private asm: Assemblies
+  private guides: Guides
   private abort: AbortController | null = null
   /** The thread the current run, restore or import writes to (one at a time per project). */
   private thread = ''
@@ -104,6 +109,17 @@ export class Project extends DurableObject<Env> {
       part: (id) => this.part(id),
       componentRefs: async (ids) => (ids.length ? ((await this.account().componentRefs(ids)) as unknown as ComponentRef[]) : []),
       partInputs: (code) => this.partInputs(code),
+      items: () => this.items(),
+      deleted: (id) => this.guides.removeFor(id),
+      broadcast: (event) => this.broadcast(event),
+    })
+    this.guides = new Guides({
+      sql: this.sql,
+      env: this.env,
+      projectId: () => this.projectId(),
+      asm: this.asm,
+      part: (id) => this.part(id),
+      items: () => this.items(),
       broadcast: (event) => this.broadcast(event),
     })
     // Version notes arrived after the first projects were made.
@@ -123,6 +139,11 @@ export class Project extends DurableObject<Env> {
       req.headers.get('x-user-email') ?? '',
     )
     if (req.method === 'POST' && new URL(req.url).pathname.endsWith('/import')) return this.importStep(req)
+    const bom = new URL(req.url).pathname.match(/\/assemblies\/([\w-]+)\/bom$/)
+    if (bom && req.method === 'GET') {
+      const doc = this.asm.get(bom[1])
+      return doc ? Response.json(await this.asm.bom(doc)) : Response.json({ error: 'no such assembly' }, { status: 404 })
+    }
     if (req.headers.get('upgrade') !== 'websocket') return new Response('expected websocket', { status: 426 })
     const info = await this.account().project(projectId)
     if (!info) return new Response('no such project', { status: 404 })
@@ -137,7 +158,7 @@ export class Project extends DurableObject<Env> {
         project: info,
         parts: this.parts(),
         assemblies: this.asm.list(),
-        guides: [],
+        guides: this.guides.list(),
         chat: this.threads.entries(thread),
         running: !!this.abort,
         threads: this.threads.list(),
@@ -474,6 +495,8 @@ export class Project extends DurableObject<Env> {
     const assemblies = this.asm.list()
     if (assemblies.length)
       lines.push(`[Assemblies: ${assemblies.map((a) => `${a.id} "${a.name}" v${a.version}, ${a.instances.length} instances, ${a.report?.warnings ?? 0} warnings${a.stale?.length ? ', out of date' : ''}`).join('; ')}]`)
+    const guides = this.guides.list()
+    if (guides.length) lines.push(`[Guides: ${guides.map((g) => `${g.id} "${g.name}" (${g.kind} for ${g.assembly}) v${g.version}, ${g.steps.length} steps, ${g.report?.warnings ?? 0} warnings`).join('; ')}]`)
     // Memory and shop go in only when they changed since this chat saw them, so history stays small.
     const hash = String(hashOf(context))
     if (hash !== this.threads.meta(this.thread, 'context')) {
@@ -497,10 +520,10 @@ export class Project extends DurableObject<Env> {
       return { id: call.id, isError: true, content: [{ type: 'text', text }] }
     }
     try {
-      if (ASSEMBLY_TOOL_NAMES.has(call.name)) {
-        const input = call.input as { assembly?: unknown; id?: unknown }
-        update({ detail: String(input.assembly ?? input.id ?? '') })
-        const r = await this.asm.run(call.name, call.input, signal, vision)
+      if (ASSEMBLY_TOOL_NAMES.has(call.name) || GUIDE_TOOL_NAMES.has(call.name)) {
+        const input = call.input as { assembly?: unknown; id?: unknown; guide?: unknown }
+        update({ detail: String(input.guide ?? input.assembly ?? input.id ?? '') })
+        const r = await this.planTool(call.name, call.input, signal, vision)
         update({ state: r.isError ? 'error' : 'done', detail: r.detail, ms: Date.now() - started })
         return { id: call.id, content: r.content, ...(r.isError && { isError: true }) }
       }
@@ -523,14 +546,7 @@ export class Project extends DurableObject<Env> {
         if (!input.success) return fail(invalid(call.input, input.error), 'invalid input')
         const part = this.part(input.data.part)
         if (!part) return fail(`No part "${input.data.part}".`, `${input.data.part} · not found`)
-        const items = await this.account().items()
-        const hardware: PartHardware[] = input.data.hardware.map((h) => {
-          const item = h.item_id ? items.find((i) => i.id === h.item_id) : undefined
-          const source = item ? (item.tier === 'on-hand' ? [item.bin && `bin ${item.bin}`, item.qty !== undefined && `${item.qty} left`].filter(Boolean).join(' · ') : (item.price ?? '')) : (h.source ?? '')
-          // The AI's name wins: "M3 × 12 SHCS" out of an M3 kit says more than the kit's name.
-          const kind = h.kind ?? ''
-          return { qty: h.qty, name: h.name, kind, tier: item?.tier ?? h.tier ?? 'order', source: item?.unit === 'kit' ? `from ${item.name} · ${source}` : source, itemId: item?.id }
-        })
+        const hardware = resolveHardware(input.data.hardware, await this.items())
         this.savePart({ ...part, hardware, madeWith: input.data.made_with ?? part.madeWith })
         const toOrder = hardware.filter((h) => h.tier !== 'on-hand').length
         update({ state: 'done', detail: `${part.id} · ${hardware.length} lines${toOrder ? ` · ${toOrder} to buy` : ''}`, ms: Date.now() - started })
@@ -734,9 +750,9 @@ export class Project extends DurableObject<Env> {
       )
     }
 
-    if (name === 'list_assemblies' || name === 'read_assembly') {
+    if (['list_assemblies', 'read_assembly', 'bill_of_materials', 'list_guides', 'read_guide'].includes(name)) {
       const { project: _p, ...args } = input
-      const r = await this.asm.run(name, args, signal, false)
+      const r = await this.planTool(name, args, signal, false)
       return { content: r.content as AgentReply['content'], isError: r.isError }
     }
 
@@ -750,18 +766,19 @@ export class Project extends DurableObject<Env> {
     }
     const tell = (fact: string) => this.threads.append(log.thread, { role: 'user', content: [{ type: 'text', text: `[An outside agent (MCP) ${fact}]` }] })
     try {
-      if (ASSEMBLY_TOOL_NAMES.has(name)) {
-        const state: CallState = { id: `mcp-${name}-${Date.now()}`, tool: name, detail: String(input.assembly ?? input.id ?? ''), state: 'running' }
+      if (ASSEMBLY_TOOL_NAMES.has(name) || GUIDE_TOOL_NAMES.has(name)) {
+        const state: CallState = { id: `mcp-${name}-${Date.now()}`, tool: name, detail: String(input.guide ?? input.assembly ?? input.id ?? ''), state: 'running' }
         log.entry.calls.push(state)
         this.toThread({ type: 'call', index: log.index, call: state }, log.thread)
         const started = Date.now()
         const { project: _p, caption: _c, ...args } = input
-        const r = await this.asm.run(name, name === 'render_assembly' ? { ...args, ...(input.caption !== undefined && { caption: input.caption }) } : args, signal, true)
+        const captioned = name === 'render_assembly' || name === 'render_guide'
+        const r = await this.planTool(name, captioned ? { ...args, ...(input.caption !== undefined && { caption: input.caption }) } : args, signal, true)
         Object.assign(state, { state: r.isError ? 'error' : 'done', detail: r.detail, ms: Date.now() - started })
         if (r.render) {
           // Saves and renders show in the agent's chat, with the agent's caption or the save's summary.
           const caption = (typeof input.caption === 'string' && input.caption.trim().slice(0, 500)) || r.line || ''
-          log.entry.images = [...(log.entry.images ?? []), { key: r.render, url: `/api/files/${r.render}`, kind: 'image', name: `${String(input.assembly ?? input.id ?? 'assembly')}.png`, ...(caption && { caption }) }]
+          log.entry.images = [...(log.entry.images ?? []), { key: r.render, url: `/api/files/${r.render}`, kind: 'image', name: `${String(input.guide ?? input.assembly ?? input.id ?? 'assembly')}.png`, ...(caption && { caption }) }]
         }
         if (r.fact) tell(r.fact)
         finish(r.line)
@@ -867,6 +884,15 @@ export class Project extends DurableObject<Env> {
       finish()
       return text(`The tool failed: ${(err as Error).message}`, true)
     }
+  }
+
+  /** An assembly or guide tool. */
+  private planTool(name: string, input: unknown, signal: AbortSignal, withImage: boolean): Promise<AssemblyOutcome> {
+    return GUIDE_TOOL_NAMES.has(name) ? this.guides.run(name, input, signal, withImage) : this.asm.run(name, input, signal, withImage)
+  }
+
+  private async items() {
+    return (await this.account().items()) as ShopItem[]
   }
 
   /** A part's stored document, for exports. */

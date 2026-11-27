@@ -4,7 +4,9 @@
 // are warnings and never block the save. The Project object owns the tables and hands this class
 // what it needs; the in-app AI and outside agents (MCP) call the same tools.
 
-import type { AssemblyDoc, AssemblyInstance, AssemblyLeaf, CheckReport, Datum, Finding, FindingKind, InstanceSpec, PartDoc, Requirement, ServerEvent, SnapResult } from '../shared/protocol'
+import type { AssemblyDoc, AssemblyInstance, AssemblyLeaf, Bom, CheckReport, Datum, Finding, FindingKind, InstanceSpec, PartDoc, Requirement, ServerEvent, ShopItem, SnapResult, Vec3 } from '../shared/protocol'
+import { billOfMaterials, describeBom, resolveHardware } from './bom'
+import type { HardwareInput } from './bom'
 import { geometryJson, keepOutput } from './components'
 import type { ComponentRef } from './components'
 import type { Env } from './env'
@@ -26,8 +28,15 @@ export type AssemblyHost = {
   componentRefs(ids: string[]): Promise<ComponentRef[]>
   /** Sources for part(id) (and pinned "id@v" entries are added here) and the assets of the parts named in `code`. */
   partInputs(code: string): Promise<{ parts: Record<string, string>; assets: Record<string, string> }>
+  /** The account's shop, read for hardware and the bill of materials (never changed). */
+  items(): Promise<ShopItem[]>
+  /** An assembly was deleted: remove its guides. */
+  deleted(id: string): void
   broadcast(event: ServerEvent): void
 }
+
+/** What guides need of a placed leaf: its datums and its extent, both in its own frame. */
+export type LeafInfo = { datums: Record<string, Datum>; min: Vec3; max: Vec3 }
 
 /** A tool's outcome: what the caller sees, a line for the chat, a fact for the in-app AI's history. */
 export type AssemblyOutcome = { content: Block[]; isError?: boolean; detail: string; render?: string; line?: string; fact?: string; file?: string }
@@ -175,7 +184,10 @@ export class Assemblies {
       const doc = this.get(f.assembly)
       if (!doc) return fail(this.missing(f.assembly), `${f.assembly} · not found`)
       if (this.get(f.id)) return fail(`There's already an assembly "${f.id}"; pick another id.`, `${f.id} · exists`)
-      return this.save(f.id, { ...specOf(doc), name: f.name }, `Copy of ${doc.id} v${doc.version}`, {}, signal, withImage)
+      const r = await this.save(f.id, { ...specOf(doc), name: f.name }, `Copy of ${doc.id} v${doc.version}`, {}, signal, withImage)
+      const copy = this.get(f.id)
+      if (!r.isError && copy && doc.hardware?.length) this.h.broadcast({ type: 'assembly', assembly: this.store({ ...copy, hardware: doc.hardware }) })
+      return r
     }
     if (name === 'swap_component') {
       const f = parse(T.SwapComponent) as { assembly: string; instance: string; component: string; name?: string; note?: string } | null
@@ -228,6 +240,45 @@ export class Assemblies {
       }
       const head = await this.h.env.FILES.head(key)
       return { content: [{ type: 'text', text: `${doc.id} v${doc.version} as STEP, ${((head?.size ?? 0) / 1024).toFixed(1)} KB: ${doc.leaves.length} named instances${doc.leaves.some((l) => l.path.includes('/')) ? ', sub-assemblies nested' : ''}.` }], detail: `${doc.id} v${doc.version} STEP`, file: key }
+    }
+    if (name === 'set_assembly_hardware') {
+      const f = parse(T.AssemblyHardware) as { assembly: string; hardware: HardwareInput[] } | null
+      if (!f) return bad(T.AssemblyHardware)
+      const doc = this.get(f.assembly)
+      if (!doc) return fail(this.missing(f.assembly), `${f.assembly} · not found`)
+      const hardware = resolveHardware(f.hardware, await this.h.items())
+      const unknown = f.hardware.filter((h, i) => h.item_id && !hardware[i].itemId).map((h) => h.item_id)
+      const saved = this.store({ ...doc, hardware, updatedAt: Date.now() })
+      this.h.broadcast({ type: 'assembly', assembly: saved })
+      const toOrder = hardware.filter((h) => h.tier !== 'on-hand').length
+      return {
+        content: [{ type: 'text', text: `Saved ${hardware.length} joining hardware line${hardware.length === 1 ? '' : 's'} on ${doc.id}: ${hardware.map((h) => `${h.qty}× ${h.name} (${h.tier}${h.itemId ? `, shop ${h.itemId}` : ''})`).join('; ') || 'none'}.${unknown.length ? ` Not in the shop: ${unknown.join(', ')} (kept by name).` : ''}` }],
+        detail: `${doc.id} · ${hardware.length} lines${toOrder ? ` · ${toOrder} to buy` : ''}`,
+        line: `${doc.name}: joining hardware, ${hardware.length} line${hardware.length === 1 ? '' : 's'}`,
+        fact: `set the joining hardware of assembly ${doc.id} (${hardware.length} lines)`,
+      }
+    }
+    if (name === 'bill_of_materials') {
+      const f = parse(T.AssemblyOnly) as { assembly: string } | null
+      if (!f) return bad(T.AssemblyOnly)
+      const doc = this.get(f.assembly)
+      if (!doc) return fail(this.missing(f.assembly), `${f.assembly} · not found`)
+      const bom = await this.bom(doc)
+      return { content: [{ type: 'text', text: describeBom(bom, doc.name) }], detail: `${doc.id} · ${bom.lines.length} lines · ${bom.totals.toBuy} to buy` }
+    }
+    if (name === 'delete_assembly') {
+      const f = parse(T.AssemblyOnly) as { assembly: string } | null
+      if (!f) return bad(T.AssemblyOnly)
+      const doc = this.get(f.assembly)
+      if (!doc) return fail(this.missing(f.assembly), `${f.assembly} · not found`)
+      const users = this.list().filter((a) => a.instances.some((i) => 'assembly' in i.ref && i.ref.assembly === doc.id))
+      if (users.length)
+        return fail(`${doc.id} is a sub-assembly of ${users.map((a) => `${a.id} (${a.instances.filter((i) => 'assembly' in i.ref && i.ref.assembly === doc.id).map((i) => i.id).join(', ')})`).join(', ')}. Remove it there first (remove_instances). Nothing was deleted.`, 'in use')
+      this.h.sql.exec('DELETE FROM assemblies WHERE id = ?', doc.id)
+      this.h.sql.exec('DELETE FROM assembly_versions WHERE assembly = ?', doc.id)
+      this.h.deleted(doc.id)
+      this.h.broadcast({ type: 'assembly_removed', id: doc.id })
+      return { content: [{ type: 'text', text: `Deleted assembly ${doc.id} "${doc.name}", its ${doc.version} version${doc.version === 1 ? '' : 's'} and its guides.` }], detail: `${doc.id} deleted`, line: `Deleted ${doc.name}`, fact: `deleted assembly ${doc.id}` }
     }
     if (name === 'check_assembly') {
       const f = parse(T.CheckAssembly) as { assembly: string; clearance?: number; requirements?: Requirement[]; time_limit?: number; views?: string[]; section?: unknown } | null
@@ -349,6 +400,17 @@ export class Assemblies {
     },
     signal: AbortSignal,
   ): Promise<GeoOut> {
+    return this.request<GeoOut>('/assembly', doc, o, {}, signal)
+  }
+
+  /** A geometry call with an assembly's shapes: its part sources, assets, datums and components. */
+  private async request<T>(
+    path: string,
+    doc: Pick<AssemblyDoc, 'id' | 'name'>,
+    o: Parameters<Assemblies['geometry']>[1],
+    extra: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<T> {
     let partKeys = o.partKeys ?? []
     let refs = o.refs ?? []
     if (o.leaves) {
@@ -391,8 +453,42 @@ export class Assemblies {
       export: !!o.export,
       groups: o.groups ?? {},
       timeout: Math.max(120, (o.time_limit ?? TIME_LIMIT) + 90),
+      ...extra,
     }
-    return geometryJson<GeoOut>(this.h.env, '/assembly', body, refs, signal)
+    return geometryJson<T>(this.h.env, path, body, refs, signal)
+  }
+
+  // ---------------------------------------------------------------- for guides and the BOM
+
+  /** A geometry call (/guide) over a saved assembly's leaves; `extra` goes into the body as is. */
+  leafRequest<T>(path: string, doc: AssemblyDoc, extra: Record<string, unknown>, timeLimit: number, signal: AbortSignal): Promise<T> {
+    const leaves = doc.leaves.map((l) => ({ path: l.path, name: l.name, key: keyOfRef(l.ref, true), matrix: l.matrix, color: l.color }))
+    return this.request<T>(path, doc, { leaves, time_limit: timeLimit }, extra, signal)
+  }
+
+  /** Each leaf's datums (of the part version it was placed with, or the component) and extent, in its own frame. */
+  async leafInfo(doc: AssemblyDoc): Promise<Map<string, LeafInfo>> {
+    const refs = await this.h.componentRefs([...new Set(doc.leaves.flatMap((l) => ('component' in l.ref ? [l.ref.component] : [])))])
+    const out = new Map<string, LeafInfo>()
+    for (const l of doc.leaves) {
+      if ('component' in l.ref) {
+        const id = l.ref.component
+        const r = refs.find((x) => x.id === id)
+        out.set(l.path, { datums: r?.datums ?? {}, min: r?.outline?.min ?? [0, 0, 0], max: r?.outline?.max ?? [0, 0, 0] })
+        continue
+      }
+      const part = this.h.part(l.ref.part)
+      const row = this.h.sql.exec<{ datums: string }>('SELECT datums FROM versions WHERE part = ? AND version = ?', l.ref.part, l.ref.version).toArray()[0]
+      const datums = row?.datums ? (JSON.parse(row.datums) as Record<string, Datum>) : l.ref.version === part?.version ? (part.datums ?? {}) : {}
+      const bb = part?.metrics?.bbox
+      out.set(l.path, { datums, min: (bb?.min as Vec3) ?? [0, 0, 0], max: (bb?.max as Vec3) ?? [0, 0, 0] })
+    }
+    return out
+  }
+
+  async bom(doc: AssemblyDoc): Promise<Bom> {
+    const components = await this.h.componentRefs([...new Set(doc.leaves.flatMap((l) => ('component' in l.ref ? [l.ref.component] : [])))])
+    return billOfMaterials(doc, { assembly: (id) => this.get(id), part: (id) => this.h.part(id), components, items: await this.h.items() })
   }
 
   private async document(id: string, spec: Spec, out: Extract<GeoOut, { ok: true }>, version: number, report: CheckReport, files: AssemblyDoc['files']): Promise<AssemblyDoc> {
@@ -418,6 +514,8 @@ export class Assemblies {
         ...('part' in inst.ref && { version: inst.ref.version ?? this.h.part(inst.ref.part)?.version }),
       }
     })
+    // Joining hardware is set on its own (set_assembly_hardware) and stays through saves.
+    const hardware = this.get(id)?.hardware
     const versions = this.h.sql
       .exec<{ version: number; note: string; created_at: number }>('SELECT version, note, created_at FROM assembly_versions WHERE assembly = ? ORDER BY version DESC LIMIT 11', id)
       .toArray()
@@ -433,6 +531,7 @@ export class Assemblies {
       ground: out.ground ?? spec.instances.find((i) => i.ground)?.id ?? spec.instances[0]?.id ?? '',
       report,
       ...(files && { files }),
+      ...(hardware?.length && { hardware }),
       versions,
       updatedAt: Date.now(),
     }
@@ -533,6 +632,7 @@ export function describe(a: AssemblyDoc, full = true) {
     }
   }
   if (a.requirements.length) lines.push(`requirements: ${a.requirements.map((r) => r.name ?? `${r.kind}(${r.a}, ${r.b}${r.kind === 'distance' ? `, ${r.value}` : ''})`).join('; ')}`)
+  lines.push(a.hardware?.length ? `joining hardware: ${a.hardware.map((h) => `${h.qty}× ${h.name} (${h.tier}${h.itemId ? `, shop ${h.itemId}` : ''})`).join('; ')}` : 'joining hardware: none set (set_assembly_hardware)')
   if (a.stale?.length) lines.push(`OUT OF DATE: ${a.stale.map((s) => `${s.ref.replace('part:', '')} is now v${s.version}`).join(', ')}; the next save follows it (place with instances: [])`)
   const r = a.report
   if (r) {

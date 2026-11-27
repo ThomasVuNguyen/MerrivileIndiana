@@ -251,6 +251,46 @@ export const ASSEMBLY_TOOLS: ToolSpec[] = [
       "Replace a placed component with another (a different camera, a newer board revision). Snaps carry over through datums with the same names; the save reports what no longer fits (missing datums, hole patterns that don't match, new clashes).",
     schema: { type: 'object', properties: { assembly: ASM, instance: { type: 'string' }, component: ID, name: { type: 'string', description: 'New instance name (default: the component\'s).' }, note: { type: 'string' } }, required: ['assembly', 'instance', 'component'], additionalProperties: false },
   },
+  {
+    name: 'set_assembly_hardware',
+    description:
+      "Record the hardware that joins this assembly's instances: screws between parts, nuts, standoffs, washers (each part's own hardware stays on the part, set_part_hardware). Use shop item ids (search_shop) where they exist. Replaces the list; it stays through later saves. bill_of_materials counts it, and guides check their steps' hardware against it.",
+    schema: {
+      type: 'object',
+      properties: {
+        assembly: ASM,
+        hardware: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              item_id: { type: 'string', description: 'Shop item id, when it comes from the shop.' },
+              name: { type: 'string', description: '"M3 × 10 SHCS".' },
+              kind: { type: 'string' },
+              qty: { type: 'integer', minimum: 1 },
+              tier: { type: 'string', enum: ['on-hand', 'prime', 'order'], description: 'Only for items not in the shop.' },
+              source: { type: 'string', description: 'For items not in the shop: "Misumi · $41 · 5 days".' },
+            },
+            required: ['name', 'qty'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['assembly', 'hardware'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bill_of_materials',
+    description:
+      "An assembly's planned bill of materials, sub-assemblies flattened: parts (count, material, mass each), components (vendor, part number, link), and hardware (each part's hardware times how many are placed, plus the joining hardware), merged by shop item, with the shop's tier, price, how many are on hand and how many short. Shop stock is never taken off: every project is a plan. Notes flag gaps such as parts with no hardware listed.",
+    schema: { type: 'object', properties: { assembly: ASM }, required: ['assembly'], additionalProperties: false },
+  },
+  {
+    name: 'delete_assembly',
+    description: 'Delete an assembly, its versions and its guides. Refused while another assembly uses it as a sub-assembly.',
+    schema: { type: 'object', properties: { assembly: ASM }, required: ['assembly'], additionalProperties: false },
+  },
 ]
 
 export const COMPONENT_TOOL_NAMES = new Set(COMPONENT_TOOLS.map((t) => t.name))
@@ -260,8 +300,8 @@ export const ASSEMBLY_TOOL_NAMES = new Set([...ASSEMBLY_TOOLS.map((t) => t.name)
 
 const V3 = z.tuple([z.number(), z.number(), z.number()])
 const Id = z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/)
-const Address = z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}(\/[a-z0-9][a-z0-9-]{0,40})*\.[A-Za-z0-9_.-]+$/, 'an address is "<instance>.<datum>" or "<sub>/<child>.<datum>"')
-export const SnapSchema = z.object({ own: z.string().min(1).max(200), to: Address, offset: z.number().optional(), flip: z.boolean().optional(), spin: z.number().optional() }).strict()
+export const DatumAddress = z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}(\/[a-z0-9][a-z0-9-]{0,40})*\.[A-Za-z0-9_.-]+$/, 'an address is "<instance>.<datum>" or "<sub>/<child>.<datum>"')
+export const SnapSchema = z.object({ own: z.string().min(1).max(200), to: DatumAddress, offset: z.number().optional(), flip: z.boolean().optional(), spin: z.number().optional() }).strict()
 export const RefSchema = z.union([
   z.object({ part: Id, version: z.number().int().min(1).optional() }).strict(),
   z.object({ component: ComponentId }).strict(),
@@ -284,9 +324,9 @@ export const InstanceSchema = z
 export const InstancePatch = InstanceSchema.partial().extend({ id: Id }).extend({ snap: Snaps.nullable().optional(), pos: V3.nullable().optional(), rot: V3.nullable().optional() })
 
 const RequirementObject = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('coaxial'), a: Address, b: Address, tol_mm: z.number().positive().optional(), tol_deg: z.number().positive().optional(), name: z.string().max(80).optional() }).strict(),
-  z.object({ kind: z.literal('parallel'), a: Address, b: Address, tol_deg: z.number().positive().optional(), name: z.string().max(80).optional() }).strict(),
-  z.object({ kind: z.literal('distance'), a: Address, b: Address, value: z.number(), tol: z.number().positive().optional(), name: z.string().max(80).optional() }).strict(),
+  z.object({ kind: z.literal('coaxial'), a: DatumAddress, b: DatumAddress, tol_mm: z.number().positive().optional(), tol_deg: z.number().positive().optional(), name: z.string().max(80).optional() }).strict(),
+  z.object({ kind: z.literal('parallel'), a: DatumAddress, b: DatumAddress, tol_deg: z.number().positive().optional(), name: z.string().max(80).optional() }).strict(),
+  z.object({ kind: z.literal('distance'), a: DatumAddress, b: DatumAddress, value: z.number(), tol: z.number().positive().optional(), name: z.string().max(80).optional() }).strict(),
 ])
 /** Also takes "coaxial(lens.axis, cell.axis, 0.01, 0.05)", "parallel(a.p, b.p, 0.1)", "distance(a.p, b.p, 12.5, 0.02)". */
 export const RequirementSchema = z.preprocess((v) => {
@@ -313,6 +353,24 @@ export const CheckAssembly = z.object({ assembly: Id, clearance: z.number().min(
 export const RenderAssembly = z.object({ assembly: Id, ...Render, size: z.number().int().min(200).max(1000).optional(), caption: z.string().max(500).optional() }).strict()
 export const DuplicateAssembly = z.object({ assembly: Id, id: Id, name: z.string().min(1).max(80) }).strict()
 export const SwapComponent = z.object({ assembly: Id, instance: Id, component: ComponentId, name: z.string().min(1).max(80).optional(), note: Note }).strict()
+export const AssemblyHardware = z
+  .object({
+    assembly: Id,
+    hardware: z.array(
+      z
+        .object({
+          item_id: z.string().optional(),
+          name: z.string().min(1).max(60),
+          kind: z.string().max(80).optional(),
+          qty: z.number().int().min(1),
+          tier: z.enum(['on-hand', 'prime', 'order']).optional(),
+          source: z.string().max(80).optional(),
+        })
+        .strict(),
+    ),
+  })
+  .strict()
+export const AssemblyOnly = z.object({ assembly: Id }).strict()
 export const ExportAssembly = z.object({ assembly: Id, version: z.number().int().min(1).optional() }).strict()
 
 export function invalid(input: unknown, error: z.ZodError) {

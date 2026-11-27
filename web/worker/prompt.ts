@@ -1,6 +1,7 @@
 import { MATERIALS } from '../shared/protocol'
 import type { ToolSpec } from './llm'
 import { ASSEMBLY_TOOLS, COMPONENT_TOOLS } from './tools-assembly'
+import { GUIDE_NOTES, GUIDE_TOOLS } from './tools-guide'
 import { SHOP_TOOLS } from './tools-shop'
 
 // Kept byte-stable so the prompt cache hits on every turn.
@@ -30,6 +31,8 @@ export const SYSTEM = `You are the modeling engine of Merrivile, a CAD app where
 - An assembly places parts, components and other assemblies. Don't work out positions by hand: publish datums on your parts (see Script rules) and snap them with write_assembly or place: snap [{own: "<datum>", to: "<instance>.<datum>", offset?, flip?, spin?}]. Plane to plane puts the faces together (flip: same way), axis to axis makes them coaxial, pattern to pattern fits hole patterns, point to point makes them meet. Two snaps for one instance, e.g. a lens's axis to the cell's axis, then its seat to the cell's seat. Use pos/rot (build123d Pos * Rot) only where there's nothing to snap to. Inside a sub-assembly, address datums as "<sub>/<child>.<datum>".
 - Every save checks the assembly: clashes (with their volume), tight gaps under the clearance (0.2 mm unless set), contacts, floating instances, keep-out intrusions, hole patterns that fit worse than 0.05 mm, snaps that can't be met, and the declared requirements. Findings are warnings, never a reason the save fails: read the report and the picture, fix the design (move an instance, resize a part, change a snap) and save again. For optics, declare requirements (coaxial, parallel, distance, with tolerances) so every save measures them.
 - Instances follow their part's latest good version; after changing a part, re-save the assemblies that use it (place with instances: []). check_assembly tries other thresholds without saving; swap_component replaces a component and reports what no longer fits.
+
+${GUIDE_NOTES}
 
 # Script rules
 - Put the design parameters at the top as UPPER_CASE constants with units in comments, so later edits are one-line changes.
@@ -151,6 +154,7 @@ export const TOOLS: ToolSpec[] = [
   },
   ...COMPONENT_TOOLS,
   ...ASSEMBLY_TOOLS,
+  ...GUIDE_TOOLS,
   ...SHOP_TOOLS,
 ]
 

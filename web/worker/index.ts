@@ -223,7 +223,8 @@ export default {
       const name = (body.name ?? '').trim().slice(0, 80) || 'Untitled'
       return json(await account.createProject(name))
     }
-    const project = path.match(/^\/api\/projects\/([\w-]+)\/(socket|import)$/)
+    // The socket, STEP imports and an assembly's bill of materials go to the project's object.
+    const project = path.match(/^\/api\/projects\/([\w-]+)\/(socket|import|assemblies\/[\w-]+\/bom)$/)
     if (project) {
       const [, id] = project
       if (!(await account.project(id))) return json({ error: 'no such project' }, 404)

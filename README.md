@@ -103,7 +103,9 @@ such as Claude Code can do what the in-app AI does. They sign in on every reques
 - Components (account-wide): `import_component`, `start_upload`, `list_components`, `read_component`,
   `set_component_datums`. Assemblies (per project): `write_assembly`, `place`, `remove_instances`,
   `read_assembly`, `list_assemblies`, `check_assembly`, `render_assembly`, `export_assembly`,
-  `duplicate_assembly`, `swap_component`. See "Assemblies and components" below.
+  `duplicate_assembly`, `swap_component`, `delete_assembly`, `set_assembly_hardware`,
+  `bill_of_materials`. Guides: `write_guide`, `edit_guide`, `read_guide`, `list_guides`,
+  `render_guide`, `delete_guide`. See "Assemblies and components" and "Guides and BOM" below.
 - Review: `inspect` runs build123d code where `part("id")` rebuilds a part from source (exact B-rep),
   prints measurements, returns `report` and full-precision metrics and renders of `result` from any
   view (`/inspect` in the geometry service). A list or `{name: shape}` result draws each part in its
@@ -157,6 +159,46 @@ checks the result. The in-app AI and outside agents (MCP) have the same tools.
   served to their owner under `/api/files/users/<uid>/components/`.
 - Changing a part marks the assemblies that use it out of date; `place` with `instances: []`
   re-places and re-checks one. `export_assembly` gives a STEP with named, nested instances.
+
+## Guides and BOM
+
+Animated assembly guides the AI writes and the person plays in the viewer, like a Lego booklet
+that moves. The in-app AI and outside agents have the same tools (`worker/tools-guide.ts`,
+`worker/guides.ts`, `geometry/guide.py`).
+
+- **Kinds.** `build` starts empty and each step adds instances (upcoming ones show as ghosts unless
+  `upcoming: "hidden"`); `exploded` and `explain` start assembled. A step has a title and text,
+  `add` / `remove`, `motions`, `camera` (view, frame, zoom, orbit), `focus`, `labels`, `hardware`
+  (shop item ids filled in with name and picture), `tools` and a `warning`. `explode: {axis?,
+  distance?, stagger?, back?}` is shorthand for motions out from the assembly's centre.
+- **Poses** are relative to where an instance sits assembled, in the assembly's frame
+  (`GuidePose` in `shared/protocol.ts`). The tools also take `{offset?, along: "<inst>.<datum>",
+  distance?, turn?: {about: "<inst>.<datum>" | axis + pivot, deg}}`; every save resolves them
+  from the datums of the placed part versions and components. A motion's `from` defaults to where
+  earlier steps left the instance, `to` to assembled; `via` poses get equal time per leg.
+- **Playback maths** is `shared/guide.ts` (`guideState`, `motionPose`, `stepFrame`, `VIEWS`, …): the
+  viewer plays guides with it, and the Worker samples with the same functions for checks and sheets.
+- **Every save** (`write_guide`, `edit_guide`) refuses unknown instances and datums, warns about
+  instances added twice, moved or labelled while not shown, never added or left apart at the end of
+  a build, and steps' hardware that doesn't match the assembly's joining hardware. Then the
+  geometry service (`POST /guide`) path-checks every motion: the Worker samples it at most 2 mm apart
+  (per corner of each moving box; ≤ 400 samples a step, 2400 a guide) and sends matrices; per solid,
+  boxes first, then the exact common volume (> 0.01 mm³). Pairs that overlap when assembled, pairs
+  still in their assembled relation (a sub-assembly moving as one) and a motion's arrival when it
+  ends assembled are left out. One `path_clash` per step and pair: first time, worst volume, where.
+  It also draws a sheet with each step's end from its camera (faded out-of-focus instances, faint
+  ghosts, labels, dark arrows for motion) and a thumbnail, and saves a version (`guides` and
+  `guide_versions` tables; the written form is kept for `edit_guide`).
+- **Viewer data**: the project snapshot has `guides`; `{type: 'guide'}` / `{type: 'guide_removed'}`
+  follow changes. A guide follows its assembly's live leaves; `assemblyVersion` older than the
+  assembly's only means its check is out of date (`edit_guide` with `ops: []` re-checks).
+- **Hardware and BOM.** `set_assembly_hardware` stores the joining hardware on `AssemblyDoc.hardware`
+  (kept through saves). `bill_of_materials` and `GET /api/projects/:id/assemblies/:aid/bom` (a
+  `Bom`) count parts per placement with sub-assemblies flattened (material, mass each),
+  components (vendor, part number, link) and hardware (each part's × how many are placed, plus
+  joining hardware, merged by shop item, else by name), with the shop's tier, picture, price, on
+  hand and short. Shop stock is never taken off: projects are plans. One assembly per variant.
+- `delete_assembly` removes an assembly and its guides, unless another assembly uses it.
 
 ## Concept demo
 
