@@ -5,10 +5,11 @@ import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js'
 import occtimportjs from 'occt-import-js'
 import occtWasm from 'occt-import-js/dist/occt-import-js.wasm?url'
 import { useLoader } from '@react-three/fiber'
-import type { AssemblyDoc, Attachment, ComponentDoc, FaceRef, ModelInfo, ServerEvent, ThreadInfo } from '../shared/protocol'
+import type { AssemblyDoc, Attachment, ComponentDoc, FaceRef, GuideDoc, ModelInfo, ServerEvent, ThreadInfo } from '../shared/protocol'
 import { api, pendingPrompt, socketUrl } from './api'
 import { BrepLoader } from './brep'
 import { loadAssembly, partFromDoc, TRANSCRIPT } from './data'
+import { useGuidePlayer } from './player'
 import { lastThread } from './threads'
 import type { Threads } from './threads'
 import type { Appearance, Assembly, Instance, Message, Part, ToolCall } from './data'
@@ -101,8 +102,13 @@ function useWorkspaceState(projectId: string) {
   const [isolated, setIsolated] = useState<string | null>(null)
   const [looks, setLooks] = useState<Record<string, InstanceLook>>(() => (live ? savedLooks(projectId) : {}))
   const [components, setComponents] = useState<ComponentDoc[] | null>(null)
+  // Guides for the project's assemblies; one plays in the viewer at a time.
+  const [guides, setGuides] = useState<GuideDoc[]>([])
+  const player = useGuidePlayer(guides, live && view === 'assembly' ? openAsm : null)
+  const { open: openGuide, close: closeGuide } = player
   // The socket handler is set up once, so it reads these instead of state.
   const asmsRef = useRef<AssemblyDoc[]>([])
+  const guidesRef = useRef<GuideDoc[]>([])
   const openRef = useRef<string | null>(null)
   const partsRef = useRef<Part[]>([])
 
@@ -110,12 +116,13 @@ function useWorkspaceState(projectId: string) {
     if (openRef.current !== id) {
       setPick(null)
       setIsolated(null)
+      closeGuide()
     }
     openRef.current = id
     setOpenAsm(id)
     setFinding(null)
     setView('assembly')
-  }, [])
+  }, [closeGuide])
   // Rotor angle in degrees. Lives in a ref so the viewer can animate it
   // every frame without re-rendering the page.
   const drive = useRef(0)
@@ -161,6 +168,8 @@ function useWorkspaceState(projectId: string) {
         setThread(ev.thread)
         asmsRef.current = ev.assemblies ?? []
         setAssemblies(asmsRef.current)
+        guidesRef.current = ev.guides ?? []
+        setGuides(guidesRef.current)
         const newest = [...ev.parts].sort((a, b) => b.updatedAt - a.updatedAt)[0]
         setSelected((s) => s ?? newest?.id ?? null)
         setView('part')
@@ -220,6 +229,19 @@ function useWorkspaceState(projectId: string) {
           setOpenAsm(null)
           setView('part')
         }
+      } else if (ev.type === 'guide') {
+        const doc = ev.guide
+        const prev = guidesRef.current.find((g) => g.id === doc.id)
+        guidesRef.current = prev ? guidesRef.current.map((g) => (g.id === doc.id ? doc : g)) : [...guidesRef.current, doc]
+        setGuides(guidesRef.current)
+        // A new version: follow the AI to it and play it from the start.
+        if (!prev || prev.version !== doc.version) {
+          showAssembly(doc.assembly)
+          openGuide(doc.id)
+        }
+      } else if (ev.type === 'guide_removed') {
+        guidesRef.current = guidesRef.current.filter((g) => g.id !== ev.id)
+        setGuides(guidesRef.current)
       } else if (ev.type === 'notes') {
         setMessages((m) => m.map((x, i) => (i === ev.index && x.role === 'ai' ? { ...x, notes: ev.notes } : x)))
       } else if (ev.type === 'part_removed') {
@@ -232,12 +254,18 @@ function useWorkspaceState(projectId: string) {
       }
     }
     connect()
+    // Until guides can be saved, `__merrivile.putGuide(doc)` feeds one in as if it came from the socket.
+    if (import.meta.env.DEV)
+      (window as unknown as { __merrivile: unknown }).__merrivile = {
+        putGuide: (guide: GuideDoc) => onEvent({ type: 'guide', guide }),
+        removeGuide: (id: string) => onEvent({ type: 'guide_removed', id }),
+      }
     return () => {
       closed = true
       window.clearTimeout(timer)
       socket.current?.close()
     }
-  }, [live, projectId, showAssembly])
+  }, [live, projectId, showAssembly, openGuide])
 
   // A part source chip in the chat selects that part.
   useEffect(() => {
@@ -602,6 +630,8 @@ function useWorkspaceState(projectId: string) {
     looks,
     setInstanceLook,
     components,
+    guides,
+    player,
   }
 }
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { ago } from './asm'
 import { AssemblyRow, AssemblySheet } from './assembly'
+import { GuideCaption, GuideTransport } from './guides'
 import { gearTrain, VERSIONS } from './data'
 import type { Part } from './data'
 import { Viewer } from './Viewer'
@@ -194,13 +195,20 @@ export function OptionB() {
   const solo = ws.view === 'part' && sel
   const doc = ws.liveAsm
   const empty = ws.live && ws.connected && ws.parts.length === 0 && ws.assemblies.length === 0
+  const guide = doc ? ws.player.guide : null
   return (
-    <div className="app optB">
+    <div className={`app optB${guide ? ' is-guide' : ''}`}>
       <Viewer theme={THEME_B} callout={ws.view === 'assembly' ? (p) => <Callout part={p} num={partNumber(ws, p)} /> : undefined} />
       {empty && (
         <div className="stage-empty">
           <span className="eyebrow">Empty project</span>
           <p>Describe a part below. The AI writes it in build123d and it appears here.</p>
+        </div>
+      )}
+      {guide && (
+        <div className="guide-stage">
+          <GuideCaption guide={guide} />
+          <GuideTransport guide={guide} />
         </div>
       )}
       <header className="paper-top">
@@ -263,7 +271,15 @@ export function OptionB() {
         </div>
       </div>
       <div className="paper-keys">
-        {doc ? (
+        {guide ? (
+          <>
+            <span>← → step</span>
+            <span className={ws.player.playing ? 'on' : ''}>Space play</span>
+            <span>Home start</span>
+            <span className={ws.section ? 'on' : ''}>S section</span>
+            <span>Esc close guide</span>
+          </>
+        ) : doc ? (
           <>
             <span className={ws.section ? 'on' : ''}>S section</span>
             <span>H hide</span>

@@ -6,10 +6,12 @@ import type { RefObject } from 'react'
 import { useFrame, useLoader } from '@react-three/fiber'
 import { Html, useBounds } from '@react-three/drei'
 import { Box3, DoubleSide, Matrix4, Quaternion, Vector3 } from 'three'
-import type { Group, MeshStandardMaterial } from 'three'
+import type { Group, LineBasicMaterial, MeshStandardMaterial } from 'three'
 import type { AssemblyDoc, AssemblyLeaf, Finding } from '../shared/protocol'
 import { fmt, lookOf, within } from './asm'
 import { BrepLoader } from './brep'
+import { GuidePlayer, LeafNodes } from './guide3d'
+import type { LeafNode } from './guide3d'
 import { DatumMarks, KeepOutMarks } from './marks'
 import type { ViewerTheme } from './Viewer'
 import { CLASH, prepare, RefitContext, SECTION, WHITE } from './viewer-shared'
@@ -18,7 +20,10 @@ import { useWorkspace } from './workspace'
 export function LiveAssembly({ doc, theme, groupRef }: { doc: AssemblyDoc; theme: ViewerTheme; groupRef: RefObject<Group | null> }) {
   const ws = useWorkspace()
   const bounds = useBounds()
-  const finding = ws.finding !== null ? doc.report?.findings[ws.finding] ?? null : null
+  const guide = ws.player.guide
+  const finding = ws.finding !== null && !guide ? doc.report?.findings[ws.finding] ?? null : null
+  // Every drawn leaf's objects, for the guide player to move and fade.
+  const nodes = useMemo(() => new Map<string, LeafNode>(), [])
 
   const shown = doc.leaves.filter((l) => !lookOf(ws.looks, doc.id, l.path).hidden && (!ws.isolated || within(l.path, ws.isolated)))
 
@@ -56,15 +61,18 @@ export function LiveAssembly({ doc, theme, groupRef }: { doc: AssemblyDoc; theme
     }
   }, [ws.section, groupRef, doc.version])
 
+  // Opening or closing a guide remounts the leaves, so they start from (and go back to) exactly
+  // what React says rather than what the player left them at.
   return (
-    <>
+    <LeafNodes.Provider value={nodes}>
       {shown.map((leaf) => (
         <Suspense key={leaf.path} fallback={null}>
-          {leaf.mesh && <Leaf key={leaf.mesh} doc={doc} leaf={leaf} theme={theme} finding={finding} />}
+          {leaf.mesh && <Leaf key={`${leaf.mesh}|${guide ? 'guide' : ''}`} doc={doc} leaf={leaf} theme={theme} finding={finding} />}
         </Suspense>
       ))}
       {finding && <FindingMarks key={`${doc.version}-${ws.finding}`} finding={finding} />}
-    </>
+      {guide && <GuidePlayer key={guide.id} guide={guide} doc={doc} groupRef={groupRef} nodes={nodes} theme={theme} />}
+    </LeafNodes.Provider>
   )
 }
 
@@ -73,8 +81,20 @@ function Leaf({ doc, leaf, theme, finding }: { doc: AssemblyDoc; leaf: AssemblyL
   const refit = useContext(RefitContext)
   const raw = useLoader(BrepLoader, leaf.mesh)
   const mat = useRef<MeshStandardMaterial>(null)
+  const edge = useRef<LineBasicMaterial>(null)
+  const group = useRef<Group>(null)
   const { geometry, edges, radius } = prepare(raw)
   useEffect(() => refit(120, `leaf:${leaf.path}`), [refit, leaf.path])
+
+  const nodes = useContext(LeafNodes)
+  useEffect(() => {
+    if (!geometry.boundingBox) geometry.computeBoundingBox()
+    const node: LeafNode = { group, mat, edge, box: geometry.boundingBox! }
+    nodes.set(leaf.path, node)
+    return () => {
+      if (nodes.get(leaf.path) === node) nodes.delete(leaf.path)
+    }
+  }, [nodes, leaf.path, geometry])
 
   const place = useMemo(() => {
     const m = new Matrix4().set(...(leaf.matrix as Parameters<Matrix4['set']>))
@@ -108,7 +128,7 @@ function Leaf({ doc, leaf, theme, finding }: { doc: AssemblyDoc; leaf: AssemblyL
   const size = Math.min(40, Math.max(4, radius * 0.45))
 
   return (
-    <group position={place.position} quaternion={place.quaternion} userData={{ path: leaf.path }}>
+    <group ref={group} position={place.position} quaternion={place.quaternion} userData={{ path: leaf.path }}>
       <mesh
         geometry={geometry}
         userData={{ path: leaf.path }}
@@ -150,6 +170,7 @@ function Leaf({ doc, leaf, theme, finding }: { doc: AssemblyDoc; leaf: AssemblyL
       </mesh>
       <lineSegments geometry={edges}>
         <lineBasicMaterial
+          ref={edge}
           color={picked && !finding ? theme.accent : theme.edge}
           transparent
           opacity={picked && !finding ? 1 : theme.edgeOpacity * (finding ? (involved ? 0.6 : 0.15) : 0.8)}
