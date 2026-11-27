@@ -4,7 +4,8 @@
 measurements, and renders whatever it assigns to `result`. Both run in the same namespace: build123d
 pre-imported, asset(name) for files sent alongside, part(id) for the project's other parts,
 component(id) for the account's vendor components and assembly(id) for placed assemblies.
-`import_component` reads a vendor STEP; `assembly` places an assembly's instances, checks and draws it.
+`import_component` reads a vendor STEP; `assembly` places an assembly's instances, checks and draws it;
+`guide` checks a guide's motions for clashes along the way and draws its steps.
 
 Children are forked from a forkserver that has already imported build123d, so a
 build starts in milliseconds instead of paying the ~3 s import every time. Each
@@ -37,7 +38,7 @@ MEMORY_LIMIT = 3 * 1024**3
 
 def _context() -> mp.context.BaseContext:
     ctx = mp.get_context("forkserver")
-    ctx.set_forkserver_preload(["build123d", "geometry.mesh", "geometry.render", "geometry.datums", "geometry.assembly", "geometry.check"])
+    ctx.set_forkserver_preload(["build123d", "geometry.mesh", "geometry.render", "geometry.datums", "geometry.assembly", "geometry.check", "geometry.guide"])
     return ctx
 
 
@@ -98,6 +99,11 @@ def import_component(step_path: str, timeout: float = 280.0) -> dict:
 def assembly(job: dict, timeout: float = 120.0) -> dict:
     """Place an assembly (or take placed leaves), then check, render and export it as asked; see _assembly_in."""
     return _spawn(_assembly_job, (job,), timeout)
+
+
+def guide(job: dict, timeout: float = 120.0) -> dict:
+    """Path-check a guide's sampled motions and draw its step sheet; see geometry/guide.py."""
+    return _spawn(_guide_job, (job,), timeout)
 
 
 def _spawn(target, args: tuple, timeout: float) -> dict:
@@ -653,6 +659,29 @@ def _assembly_in(job: dict, environment) -> dict:
         reply["step_bytes"] = os.path.getsize(out)
     reply["ms_inside"] = round((time.perf_counter() - started) * 1000)
     return reply
+
+
+def _guide_job(job: dict, conn) -> None:
+    resource.setrlimit(resource.RLIMIT_AS, (MEMORY_LIMIT, MEMORY_LIMIT))
+    files = tempfile.mkdtemp(prefix="assets-")
+    try:
+        from geometry.guide import guide_in
+        from geometry.mesh import tessellate
+
+        assets = {str(k): base64.b64decode(v) for k, v in (job.get("assets") or {}).items()}
+        components = job.get("components") or {}
+
+        def mesh_of(key: str, shape):
+            kind, _, ref = key.partition(":")
+            h = components.get(ref, {}).get("hash") if kind == "component" else None
+            return (_render_mesh(h) if h else None) or tessellate(shape, info=False)["_arrays"]
+
+        conn.send(guide_in(job, _environment(assets, job.get("parts") or {}, files, components), mesh_of))
+    except BaseException as exc:
+        conn.send({"ok": False, "error": {"type": type(exc).__name__, "message": str(exc)[:2000], "line": None, "trace": []}, "stdout": ""})
+    finally:
+        shutil.rmtree(files, ignore_errors=True)
+        conn.close()
 
 
 def _leaf_colours(placed: list, colors: dict) -> dict:

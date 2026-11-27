@@ -5,7 +5,8 @@ crops a picture for the shop; POST /image/preview makes a JPEG preview (HEIC too
 POST /video/frames and /video/copy read a video sent as the raw body; POST /convert turns a
 spreadsheet or document (raw body) into text; POST /python runs AI-written Python over files.
 POST /component reads a vendor STEP (raw body) into a component; POST /assembly places an assembly's
-instances from their snaps, checks clashes, gaps and alignment, renders and exports it.
+instances from their snaps, checks clashes, gaps and alignment, renders and exports it; POST /guide
+checks a guide's sampled motions for clashes along the way and draws a sheet of its steps.
 
 The script gets asset(name) for files sent alongside it (an imported STEP), part(id) for the
 project's other parts, sent as their sources, and component(id) for vendor components, sent as the
@@ -42,7 +43,7 @@ from geometry import cache, images, office, runner, sandbox, video
 MAX_BODY = 64 * 1024 * 1024
 MAX_VIDEO = 5 * 1024**3
 # Reported by /health so a deploy can check the container runs the new image.
-VERSION = "2026-11-26.assemblies"
+VERSION = "2026-11-27.guides"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -64,8 +65,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._python()
         if self.path == "/inspect":
             return self._inspect()
-        if self.path == "/assembly":
-            return self._assembly()
+        if self.path in ("/assembly", "/guide"):
+            return self._assembly(self.path)
         if self.path.startswith("/cache/"):
             return self._cache_put(self.path[len("/cache/") :])
         if self.path != "/build":
@@ -113,7 +114,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": False, "need": need})
         self._json(200, runner.inspect(code, timeout, assets, parts, views, size, colors, section, components, assemblies))
 
-    def _assembly(self) -> None:
+    def _assembly(self, path: str) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0 or length > MAX_BODY:
             return self._json(413, {"error": "body must be 1 byte to 64 MiB"})
@@ -122,10 +123,10 @@ class Handler(BaseHTTPRequestHandler):
             job["components"] = _components(job)
             timeout = min(max(float(job.get("timeout", 120)), 1.0), 300.0)
         except (ValueError, KeyError, TypeError, AttributeError):
-            return self._json(400, {"error": "expected JSON {spec | leaves, catalog, parts?, components?, previous?, check?, render?, export?, timeout?}"})
+            return self._json(400, {"error": "expected JSON {spec | leaves, catalog, parts?, components?, previous?, check?, render?, export?, sheet?, timeout?}"})
         if need := cache.missing(c["hash"] for c in job["components"].values()):
             return self._json(200, {"ok": False, "need": need})
-        self._json(200, runner.assembly(job, timeout))
+        self._json(200, runner.guide(job, timeout) if path == "/guide" else runner.assembly(job, timeout))
 
     def _cache_put(self, name: str) -> None:
         length = int(self.headers.get("Content-Length") or 0)
