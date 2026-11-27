@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import io
 import time
+from functools import cached_property
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -73,10 +74,7 @@ def guide_in(job: dict, environment, mesh_of) -> dict:
 def path_check(steps: list, leaves: dict, shapes: dict, time_limit: float) -> dict:
     started = time.perf_counter()
     # Each shape's solids with the corners of their boxes, in the shape's own frame.
-    solids: dict = {}
-    for key, shape in shapes.items():
-        parts = shape.solids() or [shape]
-        solids[key] = [(s, _corners(s)) for s in parts]
+    solids = {key: _prepare(shape) for key, shape in shapes.items()}
     findings: list = []
     assembled = {p: np.array(l["matrix"], dtype=np.float64).reshape(4, 4) for p, l in leaves.items()}
     assembled_overlap: dict = {}
@@ -142,22 +140,115 @@ def path_check(steps: list, leaves: dict, shapes: dict, time_limit: float) -> di
     return {"findings": findings, "partial": partial, "samples": samples}
 
 
+def _prepare(shape) -> list:
+    """Each solid of a shape with what _overlap needs, in the shape's own frame."""
+    return [_Solid(s) for s in (shape.solids() or [shape])]
+
+
+class _Solid:
+    """A solid and, worked out when first needed, its faces' box corners, a point on its boundary,
+    whether it's closed, its volume and centre (all in its own frame)."""
+
+    def __init__(self, solid):
+        self.solid = solid
+        self.corners = _corners(solid)
+        self._classifier = None
+
+    @cached_property
+    def faces(self) -> np.ndarray:
+        return np.array([_corners(f) for f in self.solid.faces()], dtype=np.float64).reshape(-1, 8, 3)
+
+    @cached_property
+    def point(self) -> np.ndarray:
+        vs = self.solid.vertices()
+        p = vs[0].center() if vs else self.solid.faces()[0].center()
+        return np.array([p.X, p.Y, p.Z], dtype=np.float64)
+
+    @cached_property
+    def closed(self) -> bool:
+        """Watertight and the right way out. Vendor STEPs have open and inside-out shells (a point far
+        away classifies as inside), and classifying points against those means nothing."""
+        from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+        from OCP.gp import gp_Pnt
+        from OCP.ShapeAnalysis import ShapeAnalysis_Shell
+        from OCP.TopAbs import TopAbs_OUT
+
+        check = ShapeAnalysis_Shell()
+        check.LoadShells(self.solid.wrapped)
+        check.CheckOrientedShells(self.solid.wrapped, True)
+        if check.NbLoaded() == 0 or check.HasFreeEdges():
+            return False
+        far = self.corners.max(axis=0) + 1000.0
+        return BRepClass3d_SolidClassifier(self.solid.wrapped, gp_Pnt(*[float(x) for x in far]), 1e-6).State() == TopAbs_OUT
+
+    @cached_property
+    def volume(self) -> float:
+        return self.solid.volume
+
+    @cached_property
+    def center(self) -> np.ndarray:
+        c = self.solid.center()
+        return np.array([c.X, c.Y, c.Z], dtype=np.float64)
+
+    def contains(self, p: np.ndarray) -> bool:
+        """Is the point (in the solid's own frame) inside it? Only meaningful for a closed solid."""
+        from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+        from OCP.gp import gp_Pnt
+        from OCP.TopAbs import TopAbs_IN
+
+        if np.any(p < self.corners.min(axis=0)) or np.any(p > self.corners.max(axis=0)):
+            return False
+        if self._classifier is None:
+            self._classifier = BRepClass3d_SolidClassifier(self.solid.wrapped)
+        self._classifier.Perform(gp_Pnt(*[float(x) for x in p]), 1e-6)
+        return self._classifier.State() == TopAbs_IN
+
+
+def _face_boxes(s: _Solid, m: np.ndarray) -> tuple:
+    p = s.faces @ m[:3, :3].T + m[:3, 3]
+    return p.min(axis=1), p.max(axis=1)
+
+
 def _overlap(sa: list, ma: np.ndarray, sb: list, mb: np.ndarray) -> tuple[float, list]:
-    """Common volume of two placed shapes (lists of (solid, local box corners)) and its centroid."""
-    boxes_a = [_box(c, ma) for _, c in sa]
-    boxes_b = [_box(c, mb) for _, c in sb]
+    """Common volume of two placed shapes (lists of _Solid) and its centroid.
+
+    Boxes first. Then, if no face box of one solid overlaps a face box of the other, their
+    boundaries can't cross, so one is inside the other (a point classification says which) or they
+    are apart. Only solids whose faces may cross get the exact boolean: a board of hundreds of
+    solids sitting in a tray costs a few box tests, not hundreds of booleans.
+    """
+    boxes_a = [_box(s.corners, ma) for s in sa]
+    boxes_b = [_box(s.corners, mb) for s in sb]
     if not _hit(_union(boxes_a), _union(boxes_b)):
         return 0.0, []
     total, moment = 0.0, np.zeros(3)
     loc_a = loc_b = None
-    for (solid_a, _), box_a in zip(sa, boxes_a):
-        for (solid_b, _), box_b in zip(sb, boxes_b):
+    faces_a: dict = {}
+    faces_b: dict = {}
+    for i, (a, box_a) in enumerate(zip(sa, boxes_a)):
+        for j, (b, box_b) in enumerate(zip(sb, boxes_b)):
             if not _hit(box_a, box_b):
                 continue
+            fa = faces_a.get(i) or faces_a.setdefault(i, _face_boxes(a, ma))
+            fb = faces_b.get(j) or faces_b.setdefault(j, _face_boxes(b, mb))
+            crossing = np.any(np.all((fa[0][:, None] < fb[1][None] - 1e-6) & (fb[0][None] < fa[1][:, None] - 1e-6), axis=2))
+            if not crossing:
+                # Apart, or one wholly inside the other. Only a closed solid can tell what's inside it;
+                # a contained open one gets the boolean below.
+                if b.closed and b.contains(_to_local(mb, _apply(ma, a.point))):
+                    inner = (a, ma)
+                elif a.closed and a.contains(_to_local(ma, _apply(mb, b.point))):
+                    inner = (b, mb)
+                else:
+                    continue
+                if inner[0].closed:
+                    total += inner[0].volume
+                    moment += inner[0].volume * _apply(inner[1], inner[0].center)
+                    continue
             if loc_a is None:
                 loc_a, loc_b = _location(ma), _location(mb)
             try:
-                common = solid_a.moved(loc_a) & solid_b.moved(loc_b)
+                common = a.solid.moved(loc_a) & b.solid.moved(loc_b)
             except Exception:
                 continue
             if common is None or not common.solids():
@@ -168,6 +259,14 @@ def _overlap(sa: list, ma: np.ndarray, sb: list, mb: np.ndarray) -> tuple[float,
                 total += v
                 moment += v * np.array([c.X, c.Y, c.Z])
     return total, (moment / total).tolist() if total > 0 else []
+
+
+def _apply(m: np.ndarray, p: np.ndarray) -> np.ndarray:
+    return m[:3, :3] @ p + m[:3, 3]
+
+
+def _to_local(m: np.ndarray, p: np.ndarray) -> np.ndarray:
+    return m[:3, :3].T @ (p - m[:3, 3])
 
 
 def _corners(shape) -> np.ndarray:

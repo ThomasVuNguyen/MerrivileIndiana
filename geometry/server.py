@@ -43,7 +43,7 @@ from geometry import cache, images, office, runner, sandbox, video
 MAX_BODY = 64 * 1024 * 1024
 MAX_VIDEO = 5 * 1024**3
 # Reported by /health so a deploy can check the container runs the new image.
-VERSION = "2026-11-27.guides"
+VERSION = "2026-11-27.guides2"
 
 
 class Handler(BaseHTTPRequestHandler):
